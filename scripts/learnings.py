@@ -1,158 +1,132 @@
 #!/usr/bin/env python3
 """
-learnings.py - Self-Improving Learning Log
-Adapted for OpenClaw stock v1.2.16 structure
-Commands: init, log, search, status
+learnings.py - Self-Improving Learning Log (Hybrid)
+
+Merges actual-self-improvement execution core with self-improving-compound
+HOT/WARM/COLD memory tiers.
+
+Commands:
+  init            Initialize .learnings/self-improving/ structure
+  status          Show HOT/WARM/COLD tier statistics
+  search          Search across all learning records
+  log             Backward-compatible generic log (COR/LRN/FTR/ERR)
+  log-correction  Log a correction to corrections.md
+  log-learning    Log a learning to memory.md
+  log-error       Log an error to memory.md
+  log-feature     Log a feature request to memory.md
+
+Global options:
+  --root PATH     Workspace root (default: OPENCLAW_WORKSPACE env, else cwd)
 """
 
-import os
-import sys
-import re
+from __future__ import annotations
+
 import argparse
-from datetime import datetime
+import os
+import re
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-BASE_DIR = Path.home() / "self-improving"
-MEMORY_FILE = BASE_DIR / "memory.md"
-CORRECTIONS_FILE = BASE_DIR / "corrections.md"
-INDEX_FILE = BASE_DIR / "index.md"
-PROJECTS_DIR = BASE_DIR / "projects"
-DOMAINS_DIR = BASE_DIR / "domains"
-ARCHIVE_DIR = BASE_DIR / "archive"
+SUBDIR_NAME = ".learnings/self-improving"
 
-ID_PATTERNS = {
-    "COR": "COR-YYYYMMDD-XXX",   # Correction
-    "LRN": "LRN-YYYYMMDD-XXX",   # Learning
-    "FTR": "FTR-YYYYMMDD-XXX",   # Feature
-    "ERR": "ERR-YYYYMMDD-XXX",   # Error
+ID_PREFIXES = {
+    "COR": "COR",
+    "LRN": "LRN",
+    "ERR": "ERR",
+    "FTR": "FTR",
 }
 
-def generate_id(prefix: str) -> str:
-    """Generate ID like COR-20260508-001"""
-    today = datetime.now().strftime("%Y%m%d")
-    # Find existing IDs with same prefix and date
-    pattern = re.compile(rf"^{prefix}-{today}-(\d{{3}})")
-    max_seq = 0
-    for file in [MEMORY_FILE, CORRECTIONS_FILE]:
-        if file.exists():
-            with open(file, "r", encoding="utf-8") as f:
-                for line in f:
-                    m = pattern.search(line)
-                    if m:
-                        max_seq = max(max_seq, int(m.group(1)))
-    seq = max_seq + 1
-    return f"{prefix}-{today}-{seq:03d}"
+SECRET_PATTERNS = [
+    re.compile(r'(?i)(api[_-]?key\s*[:=]\s*)["\']?[\w\-]{16,}["\']?', re.IGNORECASE),
+    re.compile(r'(?i)(auth[_-]?token\s*[:=]\s*)["\']?[\w\-]{8,}["\']?', re.IGNORECASE),
+    re.compile(r'(?i)(access[_-]?token\s*[:=]\s*)["\']?[\w\-]{8,}["\']?', re.IGNORECASE),
+    re.compile(r'(?i)(password\s*[:=]\s*)["\']?[^\s"\']{4,}["\']?', re.IGNORECASE),
+    re.compile(r'(?i)(secret\s*[:=]\s*)["\']?[\w\-]{8,}["\']?', re.IGNORECASE),
+    re.compile(r'(?i)(client_secret\s*[:=]\s*)["\']?[\w\-]{8,}["\']?', re.IGNORECASE),
+    re.compile(r'(?i)(authorization:\s*bearer\s+)[\w\-\.]+', re.IGNORECASE),
+    re.compile(r'(?i)(authorization:\s*basic\s+)[\w\+/=]+', re.IGNORECASE),
+    re.compile(r'(?i)(private[_-]?key\s*[:=]\s*)["\']?-----BEGIN[^\n]+', re.IGNORECASE),
+    re.compile(r'(?i)(AKIA[0-9A-Z]{16})', re.IGNORECASE),
+    re.compile(r'(?i)(sk-[a-zA-Z0-9]{20,})', re.IGNORECASE),
+]
 
-def ensure_structure():
-    """Ensure all required directories and files exist."""
-    for d in [BASE_DIR, PROJECTS_DIR, DOMAINS_DIR, ARCHIVE_DIR]:
-        d.mkdir(parents=True, exist_ok=True)
-    for f, template in [
-        (MEMORY_FILE, "# Memory (HOT Tier)\n\n## Preferences\n\n## Patterns\n\n## Rules\n"),
-        (CORRECTIONS_FILE, "# Corrections Log\n\n| ID | Date | Pattern-Key | What I Got Wrong | Correct Answer | Status |\n|------|------|-------------|------------------|----------------|--------|\n"),
-        (INDEX_FILE, "# Memory Index\n\n| File | Lines | Last Updated |\n|------|-------|--------------|\n"),
-    ]:
-        if not f.exists():
-            f.write_text(template, encoding="utf-8")
-            print(f"[init] Created {f.name}")
 
-def cmd_init(args):
-    """Initialize or verify the self-improving directory structure."""
-    ensure_structure()
-    print("[init] Self-improving structure ready.")
-    print(f"[init] Base: {BASE_DIR}")
+def redact_secrets(text: str) -> str:
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub(r'\1[REDACTED]', text)
+    return text
 
-def cmd_log(args):
-    """Log a learning, correction, feature, or error."""
-    ensure_structure()
-    log_type = (args.type or "LRN").upper()
-    content = args.content or ""
-    pattern_key = args.pattern or ""
-    
-    if not content:
-        print("[log] Error: content required")
-        sys.exit(1)
-    
-    # search-before-log deduplication
-    existing = search_content(content, limit=3)
-    if existing:
-        print(f"[log] Potential duplicates found ({len(existing)}):")
-        for e in existing:
-            print(f"  - {e['file']}:{e['line']}: {e['snippet'][:80]}...")
-        if not args.force:
-            confirm = input("[log] Proceed anyway? [y/N]: ")
-            if confirm.lower() != "y":
-                print("[log] Aborted.")
-                return
-    
-    entry_id = generate_id(log_type)
-    today = datetime.now().strftime("%Y-%m-%d")
-    
-    if log_type == "COR":
-        # Append to corrections.md as table row
-        row = f"| {entry_id} | {today} | {pattern_key} | {content} | {args.correct or ''} | ⏳ pending |\n"
-        with open(CORRECTIONS_FILE, "a", encoding="utf-8") as f:
-            f.write(row)
-        print(f"[log] Correction logged: {entry_id}")
+
+def get_base_dir(args_root: Optional[str]) -> Path:
+    if args_root:
+        root = Path(args_root).expanduser().resolve()
     else:
-        # Append to memory.md
-        section = f"\n### {entry_id} ({today})"
-        if pattern_key:
-            section += f" [Pattern-Key: {pattern_key}]"
-        section += f"\n- **Type**: {log_type}\n- **Content**: {content}\n"
-        with open(MEMORY_FILE, "a", encoding="utf-8") as f:
-            f.write(section)
-        print(f"[log] Learning logged: {entry_id}")
-    
-    update_index()
+        env_root = os.environ.get("OPENCLAW_WORKSPACE")
+        if env_root:
+            root = Path(env_root).expanduser().resolve()
+        else:
+            root = Path.cwd().resolve()
+    return root / SUBDIR_NAME
 
-def search_content(query: str, limit: int = 10) -> list:
-    """Search memory.md, corrections.md, projects/, domains/."""
-    results = []
-    query_lower = query.lower()
-    
-    # Search files
-    search_paths = [
-        MEMORY_FILE,
-        CORRECTIONS_FILE,
-        *list(PROJECTS_DIR.rglob("*.md")),
-        *list(DOMAINS_DIR.rglob("*.md")),
+
+def ensure_structure(base_dir: Path) -> None:
+    dirs = [
+        base_dir,
+        base_dir / "projects",
+        base_dir / "domains",
+        base_dir / "archive",
     ]
-    
-    for path in search_paths:
-        if not path.exists():
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-                for i, line in enumerate(lines, 1):
-                    if query_lower in line.lower():
-                        results.append({
-                            "file": path.relative_to(BASE_DIR),
-                            "line": i,
-                            "snippet": line.strip(),
-                        })
-                        if len(results) >= limit:
-                            return results
-        except Exception as e:
-            continue
-    return results
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
 
-def cmd_search(args):
-    """Search across all learning records."""
-    query = args.query or ""
-    if not query:
-        print("[search] Error: query required")
-        sys.exit(1)
-    
-    results = search_content(query, limit=args.limit or 20)
-    if not results:
-        print(f"[search] No results for '{query}'")
-        return
-    
-    print(f"[search] Found {len(results)} result(s) for '{query}':")
-    for r in results:
-        print(f"  {r['file']}:{r['line']} | {r['snippet'][:100]}")
+    memory_file = base_dir / "memory.md"
+    if not memory_file.exists():
+        memory_file.write_text(
+            "# Memory (HOT Tier)\n\n"
+            "## ID Rules\n"
+            "- All entries use format: `TYPE-YYYYMMDD-XXX` (e.g., COR-20230101-001)\n"
+            "- Types: COR (correction), LRN (learning), FTR (feature), ERR (error)\n\n"
+            "## Pattern-Key Rules\n"
+            "- Recurring issues get a stable Pattern-Key (e.g., `markdown-table-telegram`)\n"
+            "- Link related entries with `See Also: [Pattern-Key]`\n"
+            "- Bump priority when Recurrence-Count >= 3 + spans 2+ tasks + within 30 days\n\n"
+            "## Promotion Thresholds\n"
+            "- HOT -> WARM: 30 days unused\n"
+            "- WARM -> COLD: 90 days unused\n"
+            "- WARM -> HOT: 3 uses within 7 days\n"
+            "- To AGENTS.md/SOUL.md/TOOLS.md: proven + broadly applicable\n\n"
+            "## Preferences\n"
+            "<!-- Add your personal preferences here -->\n\n"
+            "## Patterns\n"
+            "<!-- Add recurring patterns here -->\n\n"
+            "## Rules\n"
+            "- Self-improving skill mode: Passive.\n"
+            f"- Use `python3 scripts/learnings.py --root <workspace>` for logging/search/status.\n"
+            "- Search before log to avoid duplicates.\n"
+            "- Never log secrets, tokens, or private data.\n",
+            encoding="utf-8",
+        )
+
+    corrections_file = base_dir / "corrections.md"
+    if not corrections_file.exists():
+        corrections_file.write_text(
+            "# Corrections Log\n\n"
+            "| ID | Date | Pattern-Key | What I Got Wrong | Correct Answer | Status |\n"
+            "|------|------|-------------|------------------|----------------|--------|\n",
+            encoding="utf-8",
+        )
+
+    index_file = base_dir / "index.md"
+    if not index_file.exists():
+        index_file.write_text(
+            "# Memory Index\n\n"
+            "| File | Lines | Last Updated |\n"
+            "|------|-------|--------------|\n",
+            encoding="utf-8",
+        )
+
 
 def count_lines(path: Path) -> int:
     if path.exists():
@@ -160,105 +134,452 @@ def count_lines(path: Path) -> int:
             return len(f.readlines())
     return 0
 
-def update_index():
-    """Update index.md with current line counts and timestamps."""
-    today = datetime.now().strftime("%Y-%m-%d")
+
+def generate_id(prefix: str, base_dir: Path) -> str:
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    pattern = re.compile(rf"(?:^|\s){prefix}-{today}-(\d{{3}})\b")
+    max_seq = 0
+    search_files = [
+        base_dir / "memory.md",
+        base_dir / "corrections.md",
+    ]
+    for f in search_files:
+        if f.exists():
+            text = f.read_text(encoding="utf-8")
+            for m in pattern.finditer(text):
+                max_seq = max(max_seq, int(m.group(1)))
+    for subdir in ["projects", "domains", "archive"]:
+        for f in (base_dir / subdir).rglob("*.md"):
+            if f.exists():
+                text = f.read_text(encoding="utf-8")
+                for m in pattern.finditer(text):
+                    max_seq = max(max_seq, int(m.group(1)))
+    seq = max_seq + 1
+    return f"{prefix}-{today}-{seq:03d}"
+
+
+def extract_pattern_keys(base_dir: Path) -> List[str]:
+    keys: List[str] = []
+    pattern = re.compile(r"Pattern-Key:\s*([^\]\n|]+)")
+    for f in [base_dir / "memory.md", base_dir / "corrections.md"]:
+        if f.exists():
+            text = f.read_text(encoding="utf-8")
+            keys.extend(k.strip() for k in pattern.findall(text) if k.strip())
+    return keys
+
+
+def update_index(base_dir: Path) -> None:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     lines = [
         "# Memory Index\n",
+        "",
         "| File | Lines | Last Updated |",
         "|------|-------|--------------|",
     ]
-    for f in [MEMORY_FILE, CORRECTIONS_FILE, BASE_DIR / "heartbeat-state.md"]:
-        lines.append(f"| {f.name} | {count_lines(f)} | {today} |")
-    
-    # Add Pattern-Key index section
+    for f in ["memory.md", "corrections.md", "index.md"]:
+        path = base_dir / f
+        lines.append(f"| {f} | {count_lines(path)} | {today} |")
+
+    warm_count = sum(
+        1 for _ in (base_dir / "projects").rglob("*.md")
+    ) + sum(1 for _ in (base_dir / "domains").rglob("*.md"))
+    cold_count = sum(1 for _ in (base_dir / "archive").rglob("*.md"))
+
     lines.extend([
+        "",
+        "## Tiers",
+        "",
+        f"- HOT: memory.md, corrections.md",
+        f"- WARM: {warm_count} files in projects/ + domains/",
+        f"- COLD: {cold_count} files in archive/",
         "",
         "## Pattern-Key Index",
         "",
     ])
-    pattern_keys = extract_pattern_keys()
+
+    pattern_keys = extract_pattern_keys(base_dir)
     if pattern_keys:
         for pk in sorted(set(pattern_keys)):
             lines.append(f"- `{pk}`")
     else:
         lines.append("_No Pattern-Keys indexed yet._")
-    
-    INDEX_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-def extract_pattern_keys() -> list:
-    """Extract all Pattern-Keys from memory.md and corrections.md."""
-    keys = []
-    pattern = re.compile(r"Pattern-Key:\s*([^\]\n]+)")
-    for f in [MEMORY_FILE, CORRECTIONS_FILE]:
-        if f.exists():
-            text = f.read_text(encoding="utf-8")
-            keys.extend(pattern.findall(text))
-    return keys
+    lines.append("")
 
-def cmd_status(args):
-    """Show HOT/WARM/COLD tier statistics."""
-    ensure_structure()
-    
-    hot_lines = count_lines(MEMORY_FILE)
-    corrections_lines = count_lines(CORRECTIONS_FILE)
-    warm_count = len(list(PROJECTS_DIR.rglob("*.md"))) + len(list(DOMAINS_DIR.rglob("*.md")))
-    cold_count = len(list(ARCHIVE_DIR.rglob("*.md")))
-    
+    (base_dir / "index.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def search_content(base_dir: Path, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    query_lower = query.lower()
+
+    search_paths = [
+        base_dir / "memory.md",
+        base_dir / "corrections.md",
+    ]
+    for subdir in ["projects", "domains", "archive"]:
+        search_paths.extend((base_dir / subdir).rglob("*.md"))
+
+    for path in search_paths:
+        if not path.exists():
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                file_lines = f.readlines()
+                for i, line in enumerate(file_lines, 1):
+                    if query_lower in line.lower():
+                        rel = path.relative_to(base_dir.parent) if path.is_relative_to(base_dir.parent) else path.name
+                        results.append({
+                            "file": str(rel),
+                            "line": i,
+                            "snippet": line.strip(),
+                        })
+                        if len(results) >= limit:
+                            return results
+        except Exception:
+            continue
+    return results
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    base_dir = get_base_dir(args.root)
+    ensure_structure(base_dir)
+    print(f"[init] Self-improving structure ready at: {base_dir}")
+    print(f"[init] HOT  : memory.md, corrections.md")
+    print(f"[init] WARM : projects/, domains/")
+    print(f"[init] COLD : archive/")
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    base_dir = get_base_dir(args.root)
+    ensure_structure(base_dir)
+
+    hot_lines = count_lines(base_dir / "memory.md")
+    corrections_lines = count_lines(base_dir / "corrections.md")
+    warm_count = sum(
+        1 for _ in (base_dir / "projects").rglob("*.md")
+    ) + sum(1 for _ in (base_dir / "domains").rglob("*.md"))
+    cold_count = sum(1 for _ in (base_dir / "archive").rglob("*.md"))
+
     print("[status] Self-Improving Memory Status")
     print(f"  HOT   : memory.md ({hot_lines} lines), corrections.md ({corrections_lines} lines)")
     print(f"  WARM  : {warm_count} markdown files in projects/ + domains/")
     print(f"  COLD  : {cold_count} archived markdown files")
-    
-    # Count entries by type
-    pattern_counts = {}
-    text = MEMORY_FILE.read_text(encoding="utf-8") if MEMORY_FILE.exists() else ""
+
+    pattern_counts: Dict[str, int] = {}
+    text = (base_dir / "memory.md").read_text(encoding="utf-8") if (base_dir / "memory.md").exists() else ""
     for m in re.finditer(r"^### (\w+)-", text, re.MULTILINE):
         prefix = m.group(1)
         pattern_counts[prefix] = pattern_counts.get(prefix, 0) + 1
-    
+
     if pattern_counts:
         print("  Entries by type:")
         for k, v in sorted(pattern_counts.items()):
             print(f"    {k}: {v}")
-    
-    # Pattern-Key summary
-    pkeys = extract_pattern_keys()
+
+    pkeys = extract_pattern_keys(base_dir)
     if pkeys:
         print(f"  Pattern-Keys: {len(set(pkeys))} unique")
 
-def main():
-    parser = argparse.ArgumentParser(description="Self-Improving Learning Log")
-    sub = parser.add_subparsers(dest="command")
-    
-    p_init = sub.add_parser("init", help="Initialize structure")
-    
-    p_log = sub.add_parser("log", help="Log a learning")
+
+def cmd_search(args: argparse.Namespace) -> None:
+    base_dir = get_base_dir(args.root)
+    query = args.query or ""
+    if not query:
+        print("[search] Error: query required", file=sys.stderr)
+        sys.exit(1)
+
+    results = search_content(base_dir, query, limit=args.limit or 20)
+    if not results:
+        print(f"[search] No results for '{query}'")
+        return
+
+    print(f"[search] Found {len(results)} result(s) for '{query}':")
+    for r in results:
+        print(f"  {r['file']}:{r['line']} | {r['snippet'][:100]}")
+
+
+def _append_to_memory(base_dir: Path, entry: str) -> None:
+    target = base_dir / "memory.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    prefix = "\n" if target.exists() and target.read_text(encoding="utf-8").rstrip() else ""
+    with target.open("a", encoding="utf-8") as f:
+        f.write(prefix)
+        f.write(entry.rstrip())
+        f.write("\n")
+
+
+def _append_to_corrections(base_dir: Path, row: str) -> None:
+    target = base_dir / "corrections.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as f:
+        f.write(row)
+
+
+def _do_dedup_check(base_dir: Path, content: str, force: bool) -> bool:
+    existing = search_content(base_dir, content, limit=3)
+    if existing:
+        print(f"[log] Potential duplicates found ({len(existing)}):")
+        for e in existing:
+            snippet = e['snippet'][:80]
+            print(f"  - {e['file']}:{e['line']}: {snippet}...")
+        if not force:
+            print("[log] Aborting. Use --force to skip dedup check.")
+            return False
+    return True
+
+
+def cmd_log_correction(args: argparse.Namespace) -> None:
+    base_dir = get_base_dir(args.root)
+    ensure_structure(base_dir)
+
+    summary = redact_secrets(args.summary or "")
+    correct = redact_secrets(args.correct or "")
+    pattern_key = args.pattern or ""
+
+    if not summary:
+        print("[log-correction] Error: --summary required", file=sys.stderr)
+        sys.exit(1)
+
+    search_term = f"{summary} {correct} {pattern_key}".strip()
+    if not _do_dedup_check(base_dir, search_term, args.force):
+        return
+
+    entry_id = generate_id("COR", base_dir)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    row = f"| {entry_id} | {today} | {pattern_key} | {summary} | {correct} | ⏳ pending |\n"
+    _append_to_corrections(base_dir, row)
+    print(f"[log-correction] Logged: {entry_id}")
+
+    update_index(base_dir)
+
+
+def cmd_log_learning(args: argparse.Namespace) -> None:
+    base_dir = get_base_dir(args.root)
+    ensure_structure(base_dir)
+
+    summary = redact_secrets(args.summary or "")
+    details = redact_secrets(args.details or "")
+    pattern_key = args.pattern or ""
+
+    if not summary:
+        print("[log-learning] Error: --summary required", file=sys.stderr)
+        sys.exit(1)
+
+    search_term = f"{summary} {details} {pattern_key}".strip()
+    if not _do_dedup_check(base_dir, search_term, args.force):
+        return
+
+    entry_id = generate_id("LRN", base_dir)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    section = f"### {entry_id} ({today})"
+    if pattern_key:
+        section += f" [Pattern-Key: {pattern_key}]"
+    section += f"\n- **Type**: LRN\n- **Summary**: {summary}\n"
+    if details:
+        section += f"- **Details**: {details}\n"
+    section += "\n"
+
+    _append_to_memory(base_dir, section)
+    print(f"[log-learning] Logged: {entry_id}")
+
+    update_index(base_dir)
+
+
+def cmd_log_error(args: argparse.Namespace) -> None:
+    base_dir = get_base_dir(args.root)
+    ensure_structure(base_dir)
+
+    summary = redact_secrets(args.summary or "")
+    details = redact_secrets(args.details or "")
+    pattern_key = args.pattern or ""
+
+    if not summary:
+        print("[log-error] Error: --summary required", file=sys.stderr)
+        sys.exit(1)
+
+    search_term = f"{summary} {details} {pattern_key}".strip()
+    if not _do_dedup_check(base_dir, search_term, args.force):
+        return
+
+    entry_id = generate_id("ERR", base_dir)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    section = f"### {entry_id} ({today})"
+    if pattern_key:
+        section += f" [Pattern-Key: {pattern_key}]"
+    section += f"\n- **Type**: ERR\n- **Summary**: {summary}\n"
+    if details:
+        section += f"- **Details**: {details}\n"
+    section += "\n"
+
+    _append_to_memory(base_dir, section)
+    print(f"[log-error] Logged: {entry_id}")
+
+    update_index(base_dir)
+
+
+def cmd_log_feature(args: argparse.Namespace) -> None:
+    base_dir = get_base_dir(args.root)
+    ensure_structure(base_dir)
+
+    summary = redact_secrets(args.summary or "")
+    details = redact_secrets(args.details or "")
+    pattern_key = args.pattern or ""
+
+    if not summary:
+        print("[log-feature] Error: --summary required", file=sys.stderr)
+        sys.exit(1)
+
+    search_term = f"{summary} {details} {pattern_key}".strip()
+    if not _do_dedup_check(base_dir, search_term, args.force):
+        return
+
+    entry_id = generate_id("FTR", base_dir)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    section = f"### {entry_id} ({today})"
+    if pattern_key:
+        section += f" [Pattern-Key: {pattern_key}]"
+    section += f"\n- **Type**: FTR\n- **Summary**: {summary}\n"
+    if details:
+        section += f"- **Details**: {details}\n"
+    section += "\n"
+
+    _append_to_memory(base_dir, section)
+    print(f"[log-feature] Logged: {entry_id}")
+
+    update_index(base_dir)
+
+
+def cmd_log(args: argparse.Namespace) -> None:
+    base_dir = get_base_dir(args.root)
+    ensure_structure(base_dir)
+
+    log_type = (args.type or "LRN").upper()
+    content = redact_secrets(args.content or "")
+    pattern_key = args.pattern or ""
+    correct = redact_secrets(args.correct or "")
+
+    if not content:
+        print("[log] Error: content required", file=sys.stderr)
+        sys.exit(1)
+
+    search_term = f"{content} {pattern_key}".strip()
+    if not _do_dedup_check(base_dir, search_term, args.force):
+        return
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    if log_type == "COR":
+        entry_id = generate_id("COR", base_dir)
+        row = f"| {entry_id} | {today} | {pattern_key} | {content} | {correct} | ⏳ pending |\n"
+        _append_to_corrections(base_dir, row)
+        print(f"[log] Correction logged: {entry_id}")
+    else:
+        prefix = ID_PREFIXES.get(log_type, "LRN")
+        entry_id = generate_id(prefix, base_dir)
+        section = f"### {entry_id} ({today})"
+        if pattern_key:
+            section += f" [Pattern-Key: {pattern_key}]"
+        section += f"\n- **Type**: {log_type}\n- **Summary**: {content}\n"
+        if correct:
+            section += f"- **Correct Answer**: {correct}\n"
+        section += "\n"
+        _append_to_memory(base_dir, section)
+        print(f"[log] Entry logged: {entry_id}")
+
+    update_index(base_dir)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Self-Improving Learning Log (Hybrid)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Environment:
+  OPENCLAW_WORKSPACE    Default workspace root if --root is not provided.
+
+Examples:
+  %(prog)s --root /path/to/workspace init
+  %(prog)s --root /path/to/workspace log-correction --summary "Used wrong format" --correct "Use lists" --pattern telegram-format --force
+  %(prog)s --root /path/to/workspace log-learning --summary "Search before logging" --details "Avoid duplicates" --pattern dedupe-rule --force
+  %(prog)s --root /path/to/workspace search telegram
+  %(prog)s --root /path/to/workspace status
+        """,
+    )
+    parser.add_argument(
+        "--root",
+        default=None,
+        help="Workspace root (default: OPENCLAW_WORKSPACE env, else current directory)",
+    )
+
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_init = sub.add_parser("init", help="Initialize .learnings/self-improving/ structure")
+    p_init.set_defaults(func=cmd_init)
+
+    p_status = sub.add_parser("status", help="Show memory status")
+    p_status.set_defaults(func=cmd_status)
+
+    p_search = sub.add_parser("search", help="Search learning records")
+    p_search.add_argument("query", nargs="?", help="Search query")
+    p_search.add_argument("--limit", "-l", type=int, default=20, help="Result limit")
+    p_search.set_defaults(func=cmd_search)
+
+    p_log = sub.add_parser("log", help="Log a learning (backward-compatible)")
     p_log.add_argument("content", nargs="?", help="Learning content")
     p_log.add_argument("--type", "-t", default="LRN", help="Entry type (COR/LRN/FTR/ERR)")
     p_log.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
     p_log.add_argument("--correct", "-c", default="", help="Correct answer (for COR type)")
     p_log.add_argument("--force", "-f", action="store_true", help="Skip dedup check")
-    
-    p_search = sub.add_parser("search", help="Search learning records")
-    p_search.add_argument("query", nargs="?", help="Search query")
-    p_search.add_argument("--limit", "-l", type=int, default=20, help="Result limit")
-    
-    p_status = sub.add_parser("status", help="Show memory status")
-    
+    p_log.set_defaults(func=cmd_log)
+
+    p_logc = sub.add_parser("log-correction", help="Log a correction")
+    p_logc.add_argument("--summary", "-s", required=True, help="What went wrong")
+    p_logc.add_argument("--correct", "-c", required=True, help="The correct answer")
+    p_logc.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
+    p_logc.add_argument("--force", "-f", action="store_true", help="Skip dedup check")
+    p_logc.set_defaults(func=cmd_log_correction)
+
+    p_logl = sub.add_parser("log-learning", help="Log a learning")
+    p_logl.add_argument("--summary", "-s", required=True, help="Learning summary")
+    p_logl.add_argument("--details", "-d", default="", help="Learning details")
+    p_logl.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
+    p_logl.add_argument("--force", "-f", action="store_true", help="Skip dedup check")
+    p_logl.set_defaults(func=cmd_log_learning)
+
+    p_loge = sub.add_parser("log-error", help="Log an error")
+    p_loge.add_argument("--summary", "-s", required=True, help="Error summary")
+    p_loge.add_argument("--details", "-d", default="", help="Error details")
+    p_loge.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
+    p_loge.add_argument("--force", "-f", action="store_true", help="Skip dedup check")
+    p_loge.set_defaults(func=cmd_log_error)
+
+    p_logf = sub.add_parser("log-feature", help="Log a feature request")
+    p_logf.add_argument("--summary", "-s", required=True, help="Feature summary")
+    p_logf.add_argument("--details", "-d", default="", help="Feature details")
+    p_logf.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
+    p_logf.add_argument("--force", "-f", action="store_true", help="Skip dedup check")
+    p_logf.set_defaults(func=cmd_log_feature)
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
     args = parser.parse_args()
-    
-    if args.command == "init":
-        cmd_init(args)
-    elif args.command == "log":
-        cmd_log(args)
-    elif args.command == "search":
-        cmd_search(args)
-    elif args.command == "status":
-        cmd_status(args)
-    else:
-        parser.print_help()
-        sys.exit(1)
+    try:
+        args.func(args)
+        return 0
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else 1
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

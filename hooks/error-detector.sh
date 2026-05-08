@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_DIR="$HOME/self-improving"
-CORRECTIONS_FILE="$BASE_DIR/corrections.md"
+WORKSPACE_ROOT="${OPENCLAW_WORKSPACE:-$(pwd)}"
+CORRECTIONS_FILE="$WORKSPACE_ROOT/.learnings/self-improving/corrections.md"
 
 ERROR_TYPE="${1:-general}"
 ERROR_DETAIL="${2:-}"
@@ -24,7 +24,7 @@ with open('$CORRECTIONS_FILE', 'r') as f:
             seq += 1
 print(f'{base}-{seq:03d}')
 ")
-    
+
     printf "| %s | %s | %s | %s | | ⏳ pending |\n" "$ID" "$TODAY" "$ERROR_TYPE" "$ERROR_DETAIL" >> "$CORRECTIONS_FILE"
     echo "[error-detector] Logged error: $ID"
 fi

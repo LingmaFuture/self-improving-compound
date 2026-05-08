@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_DIR="$HOME/self-improving"
-MEMORY_FILE="$BASE_DIR/memory.md"
+WORKSPACE_ROOT="${OPENCLAW_WORKSPACE:-$(pwd)}"
+MEMORY_FILE="$WORKSPACE_ROOT/.learnings/self-improving/memory.md"
 
 if [ ! -f "$MEMORY_FILE" ]; then
     exit 0

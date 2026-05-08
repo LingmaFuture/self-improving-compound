@@ -3,71 +3,123 @@
 A composite self-improving skill for OpenClaw that absorbs the best practices from three major self-improving agent frameworks:
 
 - **OpenClaw stock** (v1.2.16) — the built-in HOT/WARM/COLD tiered architecture
-- **tristanmanchester/actual-self-improvement** — Python toolchains and evals
-- **pskoett/self-improving-agent** — quantified promotion thresholds and hooks
+- **tristanmanchester/actual-self-improvement** — Python toolchains, structured logging, JSON evals
+- **pskoett/self-improving-agent** — quantified promotion thresholds, OpenClaw hooks, pattern-key recurrence rules
 
 ## Architecture
 
+This is a **hybrid design**: actual-self-improvement serves as the execution core, while self-improving-compound provides the memory architecture, and the local agent lineage contributes promotion rules and hook guidance.
+
+### Skill root (bundled resources)
+
 ```
-~/self-improving/
-├── memory.md              # HOT tier (always loaded)
-├── corrections.md         # Structured correction log
-├── index.md               # Auto-maintained index
-├── archive/               # COLD tier (inactive)
-├── domains/               # WARM tier (domain-specific)
-├── projects/              # WARM tier (project-specific)
+.
+├── SKILL.md                          # Portable AgentSkill frontmatter + rules
 ├── scripts/
-│   ├── learnings.py       # CLI: init, log, search, status
-│   └── extract-skill.sh   # Extract reusable skill from learnings
+│   ├── learnings.py                  # CLI: init, status, search, log, log-*, log-correction
+│   └── extract-skill.sh              # Extract reusable skill from learnings
+├── hooks/
+│   ├── activator.sh                  # Reminder at session start
+│   └── error-detector.sh             # Suggest logging after failures
 ├── evals/
-│   ├── trigger-check.md   # Quality gate: did we trigger correctly?
-│   └── output-check.md    # Quality gate: is the entry well-formed?
-└── hooks/
-    ├── activator.sh       # Reminder at session start
-    └── error-detector.sh  # Suggest logging after failures
+│   ├── trigger-validation.json       # Quality gate: did we trigger correctly?
+│   └── output-evals.json             # Quality gate: is the entry well-formed?
+├── references/
+│   ├── entry-formats.md              # Full field schemas and manual templates
+│   ├── promotion-and-extraction.md   # Promotion rules and skill extraction criteria
+│   └── platform-setup.md             # Claude Code, Codex, Copilot, and OpenClaw setup
+└── CHANGELOG.md
 ```
+
+### Workspace root (data lives here)
+
+```
+<workspace-root>/
+└── .learnings/self-improving/
+    ├── memory.md              # HOT tier (always loaded)
+    ├── corrections.md         # Structured correction log (quick table)
+    ├── index.md               # Auto-maintained index + Pattern-Key index
+    ├── projects/              # WARM tier (project-specific)
+    ├── domains/               # WARM tier (domain-specific)
+    └── archive/               # COLD tier (inactive)
+```
+
+## Install
+
+### As a portable AgentSkill
+
+1. Copy or symlink this directory into your skills location:
+   ```bash
+   cp -r self-improving-compound ~/.openclaw/skills/self-improvement
+   ```
+
+2. Ensure `scripts/learnings.py` is executable:
+   ```bash
+   chmod +x scripts/learnings.py scripts/extract-skill.sh hooks/*.sh
+   ```
+
+### Requirements
+
+- Python 3.9+
+- bash (for hook scripts)
+- No network access required
 
 ## Quick Start
 
 ```bash
-# 1. Initialize structure
-python3 scripts/learnings.py init
+# 1. Initialize structure in a workspace
+python3 scripts/learnings.py --root /path/to/workspace init
 
 # 2. Log a correction
-python3 scripts/learnings.py log \"Used wrong format for Telegram\" \
-  --type COR \
-  --pattern telegram-format \
-  --correct "Use lists, not tables"
+python3 scripts/learnings.py --root /path/to/workspace log-correction \
+  --summary "Used wrong format for Telegram" \
+  --correct "Use lists, not tables" \
+  --pattern telegram-format
 
 # 3. Log a learning
-python3 scripts/learnings.py log \"Always search before logging\" \
-  --type LRN \
+python3 scripts/learnings.py --root /path/to/workspace log-learning \
+  --summary "Always search before logging" \
+  --details "Avoid duplicate long-term memory entries" \
   --pattern dedup-rule
 
 # 4. Search
-python3 scripts/learnings.py search "telegram"
+python3 scripts/learnings.py --root /path/to/workspace search "telegram"
 
 # 5. Check status
-python3 scripts/learnings.py status
+python3 scripts/learnings.py --root /path/to/workspace status
 
 # 6. Extract a skill from accumulated learnings
-./scripts/extract-skill.sh my-skill-name
+bash scripts/extract-skill.sh my-skill-name /path/to/workspace
 ```
+
+## Path model
+
+There are **two different roots**:
+
+1. **Skill root** — where this repository lives (scripts, references, hooks).
+2. **Workspace root** — where `.learnings/self-improving/` is created and written.
+
+Never write learnings into the skill directory. Always target the workspace root.
+
+The workspace root is resolved in this order:
+1. `--root /path/to/workspace` (explicit)
+2. `OPENCLAW_WORKSPACE` environment variable
+3. Current working directory
 
 ## Key Features Absorbed
 
 | Source | Feature | How It's Integrated |
 |--------|---------|---------------------|
-| **stock** | HOT/WARM/COLD tiers | Native directory structure |
+| **stock** | HOT/WARM/COLD tiers | Native directory structure under `.learnings/self-improving/` |
 | **stock** | Automatic promotion (30d/90d) | Rules in `memory.md` |
 | **stock** | Namespace isolation (projects/domains/archive) | Native directory structure |
-| **tristanmanchester** | `learnings.py` CLI | Adapted to our directory layout |
+| **tristanmanchester** | `learnings.py` CLI | Adapted to hybrid directory layout with `--root` support |
 | **tristanmanchester** | `extract_skill.py` | Simplified to bash + scaffold |
-| **tristanmanchester** | Evals framework | `evals/trigger-check.md` + `output-check.md` |
-| **tristanmanchester** | Pattern-Key stable identifiers | Built into `memory.md` rules |
+| **tristanmanchester** | Evals framework | JSON evals: `trigger-validation.json` + `output-evals.json` |
+| **tristanmanchester** | Pattern-Key stable identifiers | Built into logging commands and auto-index |
 | **pskoett** | `TYPE-YYYYMMDD-XXX` ID format | Auto-generated by `learnings.py` |
 | **pskoett** | Quantified promotion threshold | `Recurrence-Count >= 3 + 2+ tasks + 30d` |
-| **pskoett** | Hooks (activator + error-detector) | Simplified bash versions |
+| **pskoett** | Hooks (activator + error-detector) | Simplified bash versions, workspace-root aware |
 
 ## Promotion Rules
 
@@ -76,14 +128,34 @@ python3 scripts/learnings.py status
 | HOT -> WARM | 30 days unused | Move to `domains/` or `projects/` |
 | WARM -> COLD | 90 days unused | Move to `archive/` |
 | WARM -> HOT | 3 uses within 7 days | Move to `memory.md` |
-| To AGENTS/SOUL/TOOLS | Proven + broadly applicable | Extract as skill |
+| To AGENTS/SOUL/TOOLS | Proven + broadly applicable | Promote as short prevention rule |
+| To skill | Proven + broadly applicable | Extract as skill |
+
+## Migration from prior versions
+
+### From `actual-self-improvement`
+
+- Move existing `.learnings/LEARNINGS.md`, `.learnings/ERRORS.md`, `.learnings/FEATURE_REQUESTS.md` into `.learnings/self-improving/` if desired, or keep them alongside.
+- The CLI now uses `--root` before the subcommand and writes to `.learnings/self-improving/` instead of `.learnings/` directly.
+- `log-learning`, `log-error`, `log-feature`, and `log-correction` are new specific commands; the old `log` subcommand is preserved for compatibility.
+
+### From `self-improving-compound` (original)
+
+- Data was previously at `~/self-improving/`. Now it lives at `<workspace-root>/.learnings/self-improving/`.
+- The script no longer hard-codes `~/self-improving`. Use `--root` or `OPENCLAW_WORKSPACE` to set your preferred location.
+- `corrections.md` and `memory.md` formats are preserved; `index.md` is still auto-maintained.
+
+### From `self-improving-agent-local`
+
+- The old `.learnings/LEARNINGS.md`, `.learnings/ERRORS.md`, `.learnings/FEATURE_REQUESTS.md` structure can coexist, but the hybrid skill prefers the unified `memory.md` + `corrections.md` layout.
+- Promotion targets (`CLAUDE.md`, `AGENTS.md`, `SOUL.md`, `TOOLS.md`) remain the same.
 
 ## Safety
 
-- Never log secrets, tokens, or private data
-- Corrections use table format for easy scanning
-- All entries have unique IDs for traceability
-- `search-before-log` deduplication prevents noise
+- Never log secrets, tokens, or private data. The CLI performs best-effort redaction.
+- Corrections use table format for easy scanning.
+- All entries have unique IDs for traceability.
+- `search-before-log` deduplication prevents noise.
 
 ## License
 
