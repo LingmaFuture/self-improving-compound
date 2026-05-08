@@ -29,6 +29,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+
+def get_now() -> datetime:
+    source_date = os.environ.get("SOURCE_DATE_EPOCH")
+    if source_date:
+        return datetime.fromtimestamp(int(source_date), tz=timezone.utc).astimezone()
+    return datetime.now().astimezone()
+
+
+def resolve_root(args: argparse.Namespace) -> Optional[str]:
+    return getattr(args, "local_root", None) or args.root
+
 SUBDIR_NAME = ".learnings/self-improving"
 
 ID_PREFIXES = {
@@ -136,7 +147,7 @@ def count_lines(path: Path) -> int:
 
 
 def generate_id(prefix: str, base_dir: Path) -> str:
-    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    today = get_now().strftime("%Y%m%d")
     pattern = re.compile(rf"(?:^|\s){prefix}-{today}-(\d{{3}})\b")
     max_seq = 0
     search_files = [
@@ -169,7 +180,7 @@ def extract_pattern_keys(base_dir: Path) -> List[str]:
 
 
 def update_index(base_dir: Path) -> None:
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = get_now().strftime("%Y-%m-%d")
     lines = [
         "# Memory Index\n",
         "",
@@ -242,7 +253,7 @@ def search_content(base_dir: Path, query: str, limit: int = 20) -> List[Dict[str
 
 
 def cmd_init(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(args.root)
+    base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
     print(f"[init] Self-improving structure ready at: {base_dir}")
     print(f"[init] HOT  : memory.md, corrections.md")
@@ -251,7 +262,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(args.root)
+    base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
 
     hot_lines = count_lines(base_dir / "memory.md")
@@ -261,35 +272,72 @@ def cmd_status(args: argparse.Namespace) -> None:
     ) + sum(1 for _ in (base_dir / "domains").rglob("*.md"))
     cold_count = sum(1 for _ in (base_dir / "archive").rglob("*.md"))
 
+    seen_ids: set[str] = set()
+    pattern_counts: Dict[str, int] = {}
+
+    memory_text = (base_dir / "memory.md").read_text(encoding="utf-8") if (base_dir / "memory.md").exists() else ""
+    for m in re.finditer(r"^### (\w+)-(\d{8}-\d{3})", memory_text, re.MULTILINE):
+        prefix = m.group(1)
+        entry_id = f"{prefix}-{m.group(2)}"
+        if entry_id not in seen_ids:
+            seen_ids.add(entry_id)
+            pattern_counts[prefix] = pattern_counts.get(prefix, 0) + 1
+
+    corrections_text = (base_dir / "corrections.md").read_text(encoding="utf-8") if (base_dir / "corrections.md").exists() else ""
+    for m in re.finditer(r"\|\s*([A-Z]{3}-\d{8}-\d{3})\s*\|", corrections_text):
+        entry_id = m.group(1)
+        if entry_id not in seen_ids:
+            seen_ids.add(entry_id)
+            prefix = entry_id.split("-")[0]
+            pattern_counts[prefix] = pattern_counts.get(prefix, 0) + 1
+
+    pkeys = extract_pattern_keys(base_dir)
+
+    fmt = getattr(args, "format", "text") or "text"
+    if fmt == "json":
+        import json
+        out: Dict[str, Any] = {
+            "hot": {
+                "memory_lines": hot_lines,
+                "corrections_lines": corrections_lines,
+            },
+            "warm": warm_count,
+            "cold": cold_count,
+            "entries_by_type": pattern_counts,
+            "pattern_keys": len(set(pkeys)),
+        }
+        print(json.dumps(out, indent=2))
+        return
+
     print("[status] Self-Improving Memory Status")
     print(f"  HOT   : memory.md ({hot_lines} lines), corrections.md ({corrections_lines} lines)")
     print(f"  WARM  : {warm_count} markdown files in projects/ + domains/")
     print(f"  COLD  : {cold_count} archived markdown files")
-
-    pattern_counts: Dict[str, int] = {}
-    text = (base_dir / "memory.md").read_text(encoding="utf-8") if (base_dir / "memory.md").exists() else ""
-    for m in re.finditer(r"^### (\w+)-", text, re.MULTILINE):
-        prefix = m.group(1)
-        pattern_counts[prefix] = pattern_counts.get(prefix, 0) + 1
 
     if pattern_counts:
         print("  Entries by type:")
         for k, v in sorted(pattern_counts.items()):
             print(f"    {k}: {v}")
 
-    pkeys = extract_pattern_keys(base_dir)
     if pkeys:
         print(f"  Pattern-Keys: {len(set(pkeys))} unique")
 
 
 def cmd_search(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(args.root)
+    base_dir = get_base_dir(resolve_root(args))
     query = args.query or ""
     if not query:
         print("[search] Error: query required", file=sys.stderr)
         sys.exit(1)
 
     results = search_content(base_dir, query, limit=args.limit or 20)
+
+    fmt = getattr(args, "format", "text") or "text"
+    if fmt == "json":
+        import json
+        print(json.dumps(results, indent=2))
+        return
+
     if not results:
         print(f"[search] No results for '{query}'")
         return
@@ -330,7 +378,7 @@ def _do_dedup_check(base_dir: Path, content: str, force: bool) -> bool:
 
 
 def cmd_log_correction(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(args.root)
+    base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
 
     summary = redact_secrets(args.summary or "")
@@ -346,7 +394,7 @@ def cmd_log_correction(args: argparse.Namespace) -> None:
         return
 
     entry_id = generate_id("COR", base_dir)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = get_now().strftime("%Y-%m-%d")
 
     row = f"| {entry_id} | {today} | {pattern_key} | {summary} | {correct} | ⏳ pending |\n"
     _append_to_corrections(base_dir, row)
@@ -356,7 +404,7 @@ def cmd_log_correction(args: argparse.Namespace) -> None:
 
 
 def cmd_log_learning(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(args.root)
+    base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
 
     summary = redact_secrets(args.summary or "")
@@ -372,7 +420,7 @@ def cmd_log_learning(args: argparse.Namespace) -> None:
         return
 
     entry_id = generate_id("LRN", base_dir)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = get_now().strftime("%Y-%m-%d")
 
     section = f"### {entry_id} ({today})"
     if pattern_key:
@@ -389,7 +437,7 @@ def cmd_log_learning(args: argparse.Namespace) -> None:
 
 
 def cmd_log_error(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(args.root)
+    base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
 
     summary = redact_secrets(args.summary or "")
@@ -405,7 +453,7 @@ def cmd_log_error(args: argparse.Namespace) -> None:
         return
 
     entry_id = generate_id("ERR", base_dir)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = get_now().strftime("%Y-%m-%d")
 
     section = f"### {entry_id} ({today})"
     if pattern_key:
@@ -422,7 +470,7 @@ def cmd_log_error(args: argparse.Namespace) -> None:
 
 
 def cmd_log_feature(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(args.root)
+    base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
 
     summary = redact_secrets(args.summary or "")
@@ -438,7 +486,7 @@ def cmd_log_feature(args: argparse.Namespace) -> None:
         return
 
     entry_id = generate_id("FTR", base_dir)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = get_now().strftime("%Y-%m-%d")
 
     section = f"### {entry_id} ({today})"
     if pattern_key:
@@ -455,7 +503,7 @@ def cmd_log_feature(args: argparse.Namespace) -> None:
 
 
 def cmd_log(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(args.root)
+    base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
 
     log_type = (args.type or "LRN").upper()
@@ -471,7 +519,7 @@ def cmd_log(args: argparse.Namespace) -> None:
     if not _do_dedup_check(base_dir, search_term, args.force):
         return
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = get_now().strftime("%Y-%m-%d")
 
     if log_type == "COR":
         entry_id = generate_id("COR", base_dir)
@@ -508,6 +556,7 @@ Examples:
   %(prog)s --root /path/to/workspace log-learning --summary "Search before logging" --details "Avoid duplicates" --pattern dedupe-rule --force
   %(prog)s --root /path/to/workspace search telegram
   %(prog)s --root /path/to/workspace status
+  %(prog)s status --root /path/to/workspace --format json
         """,
     )
     parser.add_argument(
@@ -518,18 +567,32 @@ Examples:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
+    def _add_root(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--root",
+            dest="local_root",
+            default=None,
+            help="Workspace root (overrides global --root)",
+        )
+
     p_init = sub.add_parser("init", help="Initialize .learnings/self-improving/ structure")
+    _add_root(p_init)
     p_init.set_defaults(func=cmd_init)
 
     p_status = sub.add_parser("status", help="Show memory status")
+    _add_root(p_status)
+    p_status.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
     p_status.set_defaults(func=cmd_status)
 
     p_search = sub.add_parser("search", help="Search learning records")
+    _add_root(p_search)
     p_search.add_argument("query", nargs="?", help="Search query")
     p_search.add_argument("--limit", "-l", type=int, default=20, help="Result limit")
+    p_search.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
     p_search.set_defaults(func=cmd_search)
 
     p_log = sub.add_parser("log", help="Log a learning (backward-compatible)")
+    _add_root(p_log)
     p_log.add_argument("content", nargs="?", help="Learning content")
     p_log.add_argument("--type", "-t", default="LRN", help="Entry type (COR/LRN/FTR/ERR)")
     p_log.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
@@ -538,6 +601,7 @@ Examples:
     p_log.set_defaults(func=cmd_log)
 
     p_logc = sub.add_parser("log-correction", help="Log a correction")
+    _add_root(p_logc)
     p_logc.add_argument("--summary", "-s", required=True, help="What went wrong")
     p_logc.add_argument("--correct", "-c", required=True, help="The correct answer")
     p_logc.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
@@ -545,6 +609,7 @@ Examples:
     p_logc.set_defaults(func=cmd_log_correction)
 
     p_logl = sub.add_parser("log-learning", help="Log a learning")
+    _add_root(p_logl)
     p_logl.add_argument("--summary", "-s", required=True, help="Learning summary")
     p_logl.add_argument("--details", "-d", default="", help="Learning details")
     p_logl.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
@@ -552,6 +617,7 @@ Examples:
     p_logl.set_defaults(func=cmd_log_learning)
 
     p_loge = sub.add_parser("log-error", help="Log an error")
+    _add_root(p_loge)
     p_loge.add_argument("--summary", "-s", required=True, help="Error summary")
     p_loge.add_argument("--details", "-d", default="", help="Error details")
     p_loge.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
@@ -559,6 +625,7 @@ Examples:
     p_loge.set_defaults(func=cmd_log_error)
 
     p_logf = sub.add_parser("log-feature", help="Log a feature request")
+    _add_root(p_logf)
     p_logf.add_argument("--summary", "-s", required=True, help="Feature summary")
     p_logf.add_argument("--details", "-d", default="", help="Feature details")
     p_logf.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")

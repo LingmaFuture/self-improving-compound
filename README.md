@@ -84,13 +84,17 @@ python3 scripts/learnings.py --root /path/to/workspace log-learning \
 
 # 4. Search
 python3 scripts/learnings.py --root /path/to/workspace search "telegram"
+python3 scripts/learnings.py --root /path/to/workspace search "telegram" --format json
 
 # 5. Check status
 python3 scripts/learnings.py --root /path/to/workspace status
+python3 scripts/learnings.py --root /path/to/workspace status --format json
 
 # 6. Extract a skill from accumulated learnings
 bash scripts/extract-skill.sh my-skill-name /path/to/workspace
 ```
+
+`--root` can be placed either before the subcommand (global) or after it (command-local). Both forms are supported.
 
 ## Path model
 
@@ -102,9 +106,11 @@ There are **two different roots**:
 Never write learnings into the skill directory. Always target the workspace root.
 
 The workspace root is resolved in this order:
-1. `--root /path/to/workspace` (explicit)
+1. `--root /path/to/workspace` (explicit, either before or after the subcommand)
 2. `OPENCLAW_WORKSPACE` environment variable
 3. Current working directory
+
+Dates and IDs use the system local timezone by default. Set `SOURCE_DATE_EPOCH` for reproducible builds.
 
 ## Key Features Absorbed
 

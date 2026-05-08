@@ -121,6 +121,9 @@ Use the helper:
 ```bash
 python3 scripts/learnings.py --root /absolute/path/to/workspace status
 python3 scripts/learnings.py --root /absolute/path/to/workspace search "pnpm" --limit 5
+
+# --root can also be placed after the subcommand
+python3 scripts/learnings.py status --root /absolute/path/to/workspace --format json
 ```
 
 ### 4) Search before logging to avoid duplicates
