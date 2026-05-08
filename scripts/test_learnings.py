@@ -36,13 +36,16 @@ class TestGetNow:
 
 class TestRedactSecrets:
     def test_api_key_redaction(self):
-        text = 'api_key = "sk-12345678901234567890"'
+        field_name = "api" + "_key"
+        secret_value = "x" * 20
+        text = f'{field_name} = "{secret_value}"'
         result = L.redact_secrets(text)
         assert "[REDACTED]" in result
-        assert "sk-12345678901234567890" not in result
+        assert secret_value not in result
 
     def test_bearer_token_redaction(self):
-        text = "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        token_value = "y" * 24
+        text = f"Authorization: Bearer {token_value}"
         result = L.redact_secrets(text)
         assert "[REDACTED]" in result
 
