@@ -63,11 +63,27 @@ SECRET_PATTERNS = [
     re.compile(r'(?i)(sk-[a-zA-Z0-9]{20,})', re.IGNORECASE),
 ]
 
+VOLATILE_PATTERNS = [
+    re.compile(r'(?i)\b(pid|process\s+id)\s*[:=]?\s*\d+\b'),
+    re.compile(r'(?i)\bsession[_-]?id\s*[:=]\s*[\w\-]{8,}\b'),
+    re.compile(r'(?i)(?<![\w/])/tmp/[\w.-]+\b'),
+    re.compile(r'(?i)\bcurrent\s+(timestamp|time|pid|session|dir|path)\b'),
+    re.compile(r'\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b'),
+]
+
 
 def redact_secrets(text: str) -> str:
     for pattern in SECRET_PATTERNS:
         text = pattern.sub(r'\1[REDACTED]', text)
     return text
+
+
+def check_volatile_patterns(text: str) -> List[str]:
+    warnings: List[str] = []
+    for pattern in VOLATILE_PATTERNS:
+        for match in pattern.finditer(text):
+            warnings.append(f"Volatile pattern detected: '{match.group(0)}'")
+    return warnings
 
 
 def get_base_dir(args_root: Optional[str]) -> Path:
@@ -112,6 +128,11 @@ def ensure_structure(base_dir: Path) -> None:
             "<!-- Add your personal preferences here -->\n\n"
             "## Patterns\n"
             "<!-- Add recurring patterns here -->\n\n"
+            "## Memory Hygiene\n"
+            "- Action-verified only: log facts you have executed and verified, not assumptions.\n"
+            "- No volatile state: avoid timestamps, session IDs, PIDs, temp paths, or 'current' values.\n"
+            "- Pointers, not duplicates: index entries and cross-references should locate details, not repeat them.\n"
+            "- Preserve facts on cleanup: compress or move entries, but keep the verified 'what works' intact.\n"
             "## Rules\n"
             "- Self-improving skill mode: Passive.\n"
             f"- Use `python3 scripts/learnings.py --root <workspace>` for logging/search/status.\n"
@@ -377,6 +398,20 @@ def _do_dedup_check(base_dir: Path, content: str, force: bool) -> bool:
     return True
 
 
+def _do_volatile_check(text: str, force: bool) -> bool:
+    warnings = check_volatile_patterns(text)
+    if warnings:
+        print("[log] Warning: volatile state detected in entry:")
+        for w in warnings[:3]:
+            print(f"  - {w}")
+        if len(warnings) > 3:
+            print(f"  ... and {len(warnings) - 3} more")
+        if not force:
+            print("[log] Aborting. Use --force to log volatile content anyway.")
+            return False
+    return True
+
+
 def cmd_log_correction(args: argparse.Namespace) -> None:
     base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
@@ -391,6 +426,8 @@ def cmd_log_correction(args: argparse.Namespace) -> None:
 
     search_term = f"{summary} {correct} {pattern_key}".strip()
     if not _do_dedup_check(base_dir, search_term, args.force):
+        return
+    if not _do_volatile_check(search_term, args.force):
         return
 
     entry_id = generate_id("COR", base_dir)
@@ -417,6 +454,8 @@ def cmd_log_learning(args: argparse.Namespace) -> None:
 
     search_term = f"{summary} {details} {pattern_key}".strip()
     if not _do_dedup_check(base_dir, search_term, args.force):
+        return
+    if not _do_volatile_check(search_term, args.force):
         return
 
     entry_id = generate_id("LRN", base_dir)
@@ -451,6 +490,8 @@ def cmd_log_error(args: argparse.Namespace) -> None:
     search_term = f"{summary} {details} {pattern_key}".strip()
     if not _do_dedup_check(base_dir, search_term, args.force):
         return
+    if not _do_volatile_check(search_term, args.force):
+        return
 
     entry_id = generate_id("ERR", base_dir)
     today = get_now().strftime("%Y-%m-%d")
@@ -483,6 +524,8 @@ def cmd_log_feature(args: argparse.Namespace) -> None:
 
     search_term = f"{summary} {details} {pattern_key}".strip()
     if not _do_dedup_check(base_dir, search_term, args.force):
+        return
+    if not _do_volatile_check(search_term, args.force):
         return
 
     entry_id = generate_id("FTR", base_dir)
@@ -517,6 +560,8 @@ def cmd_log(args: argparse.Namespace) -> None:
 
     search_term = f"{content} {pattern_key}".strip()
     if not _do_dedup_check(base_dir, search_term, args.force):
+        return
+    if not _do_volatile_check(search_term, args.force):
         return
 
     today = get_now().strftime("%Y-%m-%d")

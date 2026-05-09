@@ -177,6 +177,87 @@ class TestGenerateId:
             assert entry_id.startswith(f"LRN-{today}-")
 
 
+class TestVolatilePatterns:
+    def test_detects_pid(self):
+        warnings = L.check_volatile_patterns("Process PID 12345 crashed")
+        assert any("PID" in w for w in warnings)
+
+    def test_detects_session_id(self):
+        warnings = L.check_volatile_patterns("session-id=abc123def456")
+        assert any("session" in w.lower() for w in warnings)
+
+    def test_detects_temp_path(self):
+        warnings = L.check_volatile_patterns("Found file at /tmp/foo.bar")
+        assert any("/tmp/" in w for w in warnings)
+
+    def test_detects_iso_timestamp(self):
+        warnings = L.check_volatile_patterns("Event at 2026-05-09T14:30:00Z")
+        assert any("2026-05-09T14:30:00Z" in w for w in warnings)
+
+    def test_detects_current_state(self):
+        warnings = L.check_volatile_patterns("Current timestamp is now")
+        assert any("current" in w.lower() for w in warnings)
+
+    def test_no_false_positives_on_plain_dates(self):
+        warnings = L.check_volatile_patterns("Meeting on 2026-05-09")
+        assert warnings == []
+
+    def test_no_false_positives_on_stable_text(self):
+        warnings = L.check_volatile_patterns("Always use pnpm in this repo")
+        assert warnings == []
+
+
+class TestVolatileCheckIntegration:
+    def test_blocks_volatile_without_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / ".learnings" / "self-improving"
+            base.mkdir(parents=True)
+
+            class Args:
+                root = tmp
+                local_root = None
+                summary = "Process PID 9999 failed"
+                details = ""
+                pattern = ""
+                force = False
+
+            import io
+            from contextlib import redirect_stdout
+
+            f = io.StringIO()
+            with redirect_stdout(f):
+                L.cmd_log_learning(Args())
+
+            output = f.getvalue()
+            assert "Volatile pattern detected" in output
+            assert "Aborting" in output
+            assert "Logged" not in output
+
+    def test_allows_volatile_with_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / ".learnings" / "self-improving"
+            base.mkdir(parents=True)
+
+            class Args:
+                root = tmp
+                local_root = None
+                summary = "Process PID 9999 failed"
+                details = ""
+                pattern = ""
+                force = True
+
+            import io
+            from contextlib import redirect_stdout
+
+            f = io.StringIO()
+            with redirect_stdout(f):
+                L.cmd_log_learning(Args())
+
+            output = f.getvalue()
+            assert "Volatile pattern detected" in output
+            assert "Logged:" in output
+
+
 class TestSearchJsonFormat:
     def test_json_output(self):
         with tempfile.TemporaryDirectory() as tmp:

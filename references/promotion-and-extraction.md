@@ -37,6 +37,30 @@ Extract a reusable skill when most of these are true:
 - the pattern has recurred or is likely to recur
 - the resulting skill can stand on its own without original chat context
 
+## Memory hygiene (GenericAgent-inspired)
+
+The following principles are adapted from the GenericAgent memory-management model (MIT licensed). They help keep durable memory clean, accurate, and pointer-like.
+
+### 1. Action-verified memory only
+Only log a lesson as fact when it is based on an executed and verified observation (e.g. a command that ran, a file that was read, a test that passed). Do not store unverified assumptions, speculative fixes, or "I think" statements as durable memory.
+
+> **Rule of thumb**: *No execution, no memory.* If you have not verified it, do not log it as fact.
+
+### 2. No volatile state in durable memory
+Avoid storing ephemeral or session-specific values that change frequently or become stale immediately. Examples to omit:
+- Timestamps, session IDs, process PIDs
+- Absolute temporary paths (`/tmp/...` on a specific machine)
+- Connection handles, one-time tokens, or runtime device info
+- "Current" versions or counts that will be wrong on the next run
+
+Volatile context belongs in working memory or session notes, not in `.learnings/self-improving/`.
+
+### 3. Index entries are pointers, not duplicates
+The `index.md` Pattern-Key list and any cross-references should act as minimal pointers. They should tell a future reader *that* a pattern exists and *where* to find it, without duplicating the full details. If the index grows into a copy of the entries, it is too verbose.
+
+### 4. Preserve verified facts during cleanup
+When promoting, archiving, or refactoring entries, verified facts and fixes must survive intact. It is fine to compress wording or move an entry to a different tier, but do not drop the accurate "what was wrong" and "what works" information.
+
 ## Before extracting
 
 Check:
