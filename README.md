@@ -91,7 +91,12 @@ python3 scripts/learnings.py --root /path/to/workspace search "telegram" --forma
 python3 scripts/learnings.py --root /path/to/workspace status
 python3 scripts/learnings.py --root /path/to/workspace status --format json
 
-# 6. Extract a skill from accumulated learnings
+# 6. Review and maintain memory lifecycle (dry-run by default)
+python3 scripts/learnings.py --root /path/to/workspace maintain
+python3 scripts/learnings.py --root /path/to/workspace maintain --format json
+python3 scripts/learnings.py --root /path/to/workspace maintain --apply
+
+# 7. Extract a skill from accumulated learnings
 bash scripts/extract-skill.sh my-skill-name /path/to/workspace
 ```
 
@@ -118,7 +123,7 @@ Dates and IDs use the system local timezone by default. Set `SOURCE_DATE_EPOCH` 
 | Source | Feature | How It's Integrated |
 |--------|---------|---------------------|
 | **stock** | HOT/WARM/COLD tiers | Native directory structure under `.learnings/self-improving/` |
-| **stock** | Automatic promotion (30d/90d) | Rules in `memory.md` |
+| **stock** | Automatic promotion (30d/90d) | Enforced by `maintain` command with `--dry-run` and `--apply`; moves stale entries (not whole files) to preserve unrelated content |
 | **stock** | Namespace isolation (projects/domains/archive) | Native directory structure |
 | **tristanmanchester** | `learnings.py` CLI | Adapted to hybrid directory layout with `--root` support |
 | **tristanmanchester** | `extract_skill.py` | Simplified to bash + scaffold |
@@ -128,13 +133,54 @@ Dates and IDs use the system local timezone by default. Set `SOURCE_DATE_EPOCH` 
 | **pskoett** | Quantified promotion threshold | `Recurrence-Count >= 3 + 2+ tasks + 30d` |
 | **pskoett** | Hooks (activator + error-detector) | Simplified bash versions, workspace-root aware |
 | **GenericAgent** | Memory hygiene (action-verified, no volatile state, pointer hygiene) | Rules in `references/promotion-and-extraction.md`, validation in `scripts/learnings.py` |
+| **ivangdavila** | Human-like memory lifecycle | `maintain` subcommand with promotion/demotion/archive |
+| **ivangdavila** | HOT/WARM/COLD limits & namespace specificity | Tier enforcement + `project > domain > global` conflict resolution |
+| **ivangdavila** | Compaction by summarization/merge | `maintain` merges/summarizes; never deletes confirmed preferences |
+| **ivangdavila** | Heartbeat maintenance guidance | `references/heartbeat-guidance.md` with periodic `maintain --dry-run` |
+| **ivangdavila** | Transparent source/pointer hygiene | Metadata fields + citation-ready entries |
+
+## Memory Lifecycle
+
+This skill integrates a human-like memory lifecycle inspired by `ivangdavila/self-improving`:
+
+| Tier | Location | Trigger | Behavior |
+|------|----------|---------|----------|
+| **HOT** | `memory.md`, `corrections.md` | Active use | Always loaded; entries include `First-Seen`, `Last-Seen`, `Recurrence-Count`, `Status`, and `Area` metadata |
+| **WARM** | `projects/`, `domains/` | Demoted from HOT after 30 days unused | Load on context match; preserves full history |
+| **COLD** | `archive/` | Demoted from WARM after 90 days unused | Load on explicit query; never deleted without explicit action |
+
+### Automatic lifecycle rules
+
+The `maintain` command enforces these rules safely:
+
+| Condition | Threshold | Action |
+|-----------|-----------|--------|
+| HOT -> WARM | 30 days unused | Move stale entry to appropriate `domains/` or `projects/` file based on `Area` metadata |
+| WARM -> COLD | 90 days unused | Move stale entry to `archive/<source-name>.md` |
+| WARM -> HOT | `Recurrence-Count >= 3` or 3 uses within 7 days | Flag for promotion back to `memory.md` |
+| Compaction | File exceeds tier limit | Merge or summarize; never erase confirmed preferences |
+
+### Conflict resolution
+
+When patterns contradict, the following precedence applies:
+
+1. **More specific wins**: `project` > `domain` > `global`
+2. **More recent wins** at the same specificity level
+3. **Ambiguous conflicts** require asking the user instead of guessing
+
+### Maintenance safety
+
+- `maintain` defaults to `--dry-run`; use `--apply` to execute moves.
+- Content is never deleted; it is moved, archived, or summarized.
+- If metadata is insufficient, `maintain` reports recommendations rather than making destructive guesses.
+- The heartbeat guidance (see `references/heartbeat-guidance.md`) suggests running `maintain --dry-run` periodically.
 
 ## Promotion Rules
 
 | Tier | Condition | Action |
 |------|-----------|--------|
-| HOT -> WARM | 30 days unused | Move to `domains/` or `projects/` |
-| WARM -> COLD | 90 days unused | Move to `archive/` |
+| HOT -> WARM | 30 days unused | Move stale entry to `domains/` or `projects/` based on `Area` metadata |
+| WARM -> COLD | 90 days unused | Move stale entry to `archive/<source-name>.md` |
 | WARM -> HOT | 3 uses within 7 days | Move to `memory.md` |
 | To AGENTS/SOUL/TOOLS | Proven + broadly applicable | Promote as short prevention rule |
 | To skill | Proven + broadly applicable | Extract as skill |

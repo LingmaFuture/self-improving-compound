@@ -234,12 +234,42 @@ bash scripts/extract-skill.sh my-skill-name /absolute/path/to/workspace
 7. **Do not interrupt the user with bookkeeping.** Log silently unless the user asked to see it or you need missing details.
 8. **Never log secrets.** Tokens, passwords, API keys, and private data must be redacted or omitted.
 
+## Memory lifecycle (integrated from ivangdavila/self-improving)
+
+Entries carry metadata (`First-Seen`, `Last-Seen`, `Recurrence-Count`, `Status`, `Area`) so the system can make deterministic lifecycle decisions without guessing.
+
+| Tier | Location | Size guidance | Behavior |
+|------|----------|---------------|----------|
+| HOT | `memory.md`, `corrections.md` | <=100 lines each | Always loaded; most active patterns |
+| WARM | `projects/`, `domains/` | <=200 lines each | Loaded on context match |
+| COLD | `archive/` | Unlimited | Loaded on explicit query |
+
+### Automatic promotion/demotion
+
+Use `python3 scripts/learnings.py maintain --root <workspace>` to review:
+
+| Condition | Threshold | Action |
+|---|---|---|
+| HOT -> WARM | 30 days unused | Move stale entry to `domains/` or `projects/` based on `Area` metadata |
+| WARM -> COLD | 90 days unused | Move stale entry to `archive/<source-name>.md` |
+| WARM -> HOT | `Recurrence-Count >= 3` or 3 uses within 7 days | Flag for promotion to `memory.md` |
+| Compaction | File exceeds limit | Merge/summarize; never erase confirmed preferences |
+
+`maintain` defaults to `--dry-run`. Use `--apply` to execute safe moves. It never deletes content.
+
+### Conflict resolution
+
+When patterns contradict:
+1. **More specific wins**: `project` > `domain` > `global`
+2. **More recent wins** at the same specificity level
+3. **Ambiguous conflicts** → ask the user instead of guessing
+
 ## Promotion thresholds (from legacy)
 
 | Condition | Threshold | Action |
 |---|---|---|
-| HOT -> WARM | 30 days unused | Move to `domains/` or `projects/` |
-| WARM -> COLD | 90 days unused | Move to `archive/` |
+| HOT -> WARM | 30 days unused | Move stale entry to `domains/` or `projects/` based on `Area` metadata |
+| WARM -> COLD | 90 days unused | Move stale entry to `archive/<source-name>.md` |
 | WARM -> HOT | 3 uses within 7 days | Move to `memory.md` |
 | To AGENTS/SOUL/TOOLS | `Recurrence-Count >= 3` + spans 2+ tasks + within 30 days | Promote as short prevention rule |
 | To skill | Proven + broadly applicable | Extract as skill |

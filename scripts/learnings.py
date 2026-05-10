@@ -14,6 +14,7 @@ Commands:
   log-learning    Log a learning to memory.md
   log-error       Log an error to memory.md
   log-feature     Log a feature request to memory.md
+  maintain        Review and maintain memory lifecycle
 
 Global options:
   --root PATH     Workspace root (default: OPENCLAW_WORKSPACE env, else cwd)
@@ -385,6 +386,114 @@ def _append_to_corrections(base_dir: Path, row: str) -> None:
         f.write(row)
 
 
+ENTRY_HEADING_RE = re.compile(r'^#{2,3}\s+.*[A-Z]{3}-\d{8}-\d{3}')
+
+
+def parse_file_blocks(path: Path) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    blocks: List[Dict[str, Any]] = []
+    i = 0
+    while i < len(lines):
+        if ENTRY_HEADING_RE.match(lines[i]):
+            start = i
+            i += 1
+            while i < len(lines):
+                if ENTRY_HEADING_RE.match(lines[i]):
+                    break
+                i += 1
+            block_lines = lines[start:i]
+            while block_lines and block_lines[-1].strip() == "":
+                block_lines.pop()
+            block_text = "".join(block_lines)
+            blocks.append({
+                "text": block_text,
+                "source": path,
+            })
+        else:
+            i += 1
+    return blocks
+
+
+META_PATTERNS = [
+    (re.compile(r'^[ \t]*[-*][ \t]+(?:\*\*)?Pattern-Key(?:\*\*)?[ \t]*[:：][ \t]*(.*?)$', re.IGNORECASE), "pattern_key"),
+    (re.compile(r'^[ \t]*[-*][ \t]+(?:\*\*)?First-Seen(?:\*\*)?[ \t]*[:：][ \t]*(.*?)$', re.IGNORECASE), "first_seen"),
+    (re.compile(r'^[ \t]*[-*][ \t]+(?:\*\*)?Last-Seen(?:\*\*)?[ \t]*[:：][ \t]*(.*?)$', re.IGNORECASE), "last_seen"),
+    (re.compile(r'^[ \t]*[-*][ \t]+(?:\*\*)?Recurrence-Count(?:\*\*)?[ \t]*[:：][ \t]*(.*?)$', re.IGNORECASE), "recurrence_count"),
+    (re.compile(r'^[ \t]*[-*][ \t]+(?:\*\*)?Area(?:\*\*)?[ \t]*[:：][ \t]*(.*?)$', re.IGNORECASE), "area"),
+]
+
+
+def parse_block_metadata(block_text: str) -> Dict[str, str]:
+    meta: Dict[str, str] = {}
+    for pattern, key in META_PATTERNS:
+        for line in block_text.splitlines():
+            m = pattern.match(line)
+            if m:
+                meta[key] = m.group(1).strip()
+                break
+    return meta
+
+
+def extract_entry_id(block_text: str) -> Optional[str]:
+    for line in block_text.splitlines():
+        m = re.search(r'([A-Z]{3}-\d{8}-\d{3})', line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def parse_date(date_str: str) -> Optional[datetime]:
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(date_str.strip(), fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def days_since(date_str: str) -> Optional[int]:
+    dt = parse_date(date_str)
+    if not dt:
+        return None
+    now = get_now().astimezone(timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    return (now - dt).days
+
+
+def append_block_to_file(path: Path, block_text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+        text = text.rstrip()
+        if text:
+            text += "\n\n"
+        text += block_text.rstrip() + "\n"
+    else:
+        text = block_text.rstrip() + "\n"
+    path.write_text(text, encoding="utf-8")
+
+
+def remove_block_from_file(path: Path, block_text: str) -> None:
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    idx = text.find(block_text)
+    if idx == -1:
+        return
+    before = text[:idx]
+    after = text[idx + len(block_text):]
+    before = before.rstrip()
+    after = after.lstrip()
+    new_text = before
+    if after:
+        new_text += "\n\n" + after
+    new_text = new_text.rstrip() + "\n"
+    path.write_text(new_text, encoding="utf-8")
+
+
 def _do_dedup_check(base_dir: Path, content: str, force: bool) -> bool:
     existing = search_content(base_dir, content, limit=3)
     if existing:
@@ -467,6 +576,9 @@ def cmd_log_learning(args: argparse.Namespace) -> None:
     section += f"\n- **Type**: LRN\n- **Summary**: {summary}\n"
     if details:
         section += f"- **Details**: {details}\n"
+    section += f"- **First-Seen**: {today}\n"
+    section += f"- **Last-Seen**: {today}\n"
+    section += f"- **Recurrence-Count**: 1\n"
     section += "\n"
 
     _append_to_memory(base_dir, section)
@@ -502,6 +614,9 @@ def cmd_log_error(args: argparse.Namespace) -> None:
     section += f"\n- **Type**: ERR\n- **Summary**: {summary}\n"
     if details:
         section += f"- **Details**: {details}\n"
+    section += f"- **First-Seen**: {today}\n"
+    section += f"- **Last-Seen**: {today}\n"
+    section += f"- **Recurrence-Count**: 1\n"
     section += "\n"
 
     _append_to_memory(base_dir, section)
@@ -537,6 +652,9 @@ def cmd_log_feature(args: argparse.Namespace) -> None:
     section += f"\n- **Type**: FTR\n- **Summary**: {summary}\n"
     if details:
         section += f"- **Details**: {details}\n"
+    section += f"- **First-Seen**: {today}\n"
+    section += f"- **Last-Seen**: {today}\n"
+    section += f"- **Recurrence-Count**: 1\n"
     section += "\n"
 
     _append_to_memory(base_dir, section)
@@ -580,11 +698,265 @@ def cmd_log(args: argparse.Namespace) -> None:
         section += f"\n- **Type**: {log_type}\n- **Summary**: {content}\n"
         if correct:
             section += f"- **Correct Answer**: {correct}\n"
+        section += f"- **First-Seen**: {today}\n"
+        section += f"- **Last-Seen**: {today}\n"
+        section += f"- **Recurrence-Count**: 1\n"
         section += "\n"
         _append_to_memory(base_dir, section)
         print(f"[log] Entry logged: {entry_id}")
 
     update_index(base_dir)
+
+
+def _parse_date(date_str: str) -> Optional[datetime]:
+    if not date_str:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(date_str.strip(), fmt).replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _parse_entries(text: str) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    pattern = re.compile(
+        r'^###\s+([A-Z]{3}-\d{8}-\d{3})\s+\(([^)]+)\)(?:\s*\[Pattern-Key:\s*([^\]]+)\])?\s*\n'
+        r'(.*?)(?=^###\s+[A-Z]{3}-\d{8}-\d{3}|\Z)',
+        re.MULTILINE | re.DOTALL,
+    )
+    for m in pattern.finditer(text):
+        entry_id = m.group(1)
+        date_str = m.group(2)
+        pattern_key = (m.group(3) or "").strip()
+        body = m.group(4)
+
+        metadata: Dict[str, str] = {}
+        for line in body.split("\n"):
+            meta_match = re.match(r'- \*\*([^*]+)\*\*:\s*(.*)', line)
+            if meta_match:
+                key = meta_match.group(1).strip()
+                value = meta_match.group(2).strip()
+                metadata[key] = value
+
+        first_seen = _parse_date(metadata.get("First-Seen", ""))
+        last_seen = _parse_date(metadata.get("Last-Seen", ""))
+        recurrence_count = 0
+        try:
+            recurrence_count = int(metadata.get("Recurrence-Count", "0"))
+        except (ValueError, TypeError):
+            pass
+
+        entries.append({
+            "id": entry_id,
+            "date_str": date_str,
+            "pattern_key": pattern_key,
+            "body": body,
+            "metadata": metadata,
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "recurrence_count": recurrence_count,
+            "status": metadata.get("Status", ""),
+            "area": metadata.get("Area", ""),
+            "full_text": m.group(0),
+            "start": m.start(),
+            "end": m.end(),
+        })
+    return entries
+
+
+def _remove_entries_from_text(text: str, entries_to_remove: List[Dict[str, Any]]) -> str:
+    if not entries_to_remove:
+        return text
+    sorted_entries = sorted(entries_to_remove, key=lambda e: e["start"], reverse=True)
+    result = text
+    for entry in sorted_entries:
+        result = result[:entry["start"]] + result[entry["end"]:]
+    return result
+
+
+def cmd_maintain(args: argparse.Namespace) -> None:
+    base_dir = get_base_dir(resolve_root(args))
+    ensure_structure(base_dir)
+
+    now = get_now()
+    apply_arg = getattr(args, "apply", None)
+    if apply_arg is None:
+        dry_run = getattr(args, "dry_run", True)
+    else:
+        dry_run = bool(getattr(args, "dry_run", False)) or not bool(apply_arg)
+    fmt = getattr(args, "format", "text") or "text"
+
+    results: Dict[str, List[Dict[str, Any]]] = {
+        "stale_hot": [],
+        "stale_warm": [],
+        "promote_candidates": [],
+        "insufficient_metadata": [],
+    }
+
+    memory_file = base_dir / "memory.md"
+    if memory_file.exists():
+        text = memory_file.read_text(encoding="utf-8")
+        entries = _parse_entries(text)
+        for entry in entries:
+            last_seen = entry.get("last_seen")
+            if last_seen is None:
+                last_seen = _parse_date(entry.get("date_str", ""))
+
+            if last_seen is None:
+                results["insufficient_metadata"].append({
+                    "id": entry["id"],
+                    "reason": "missing Last-Seen",
+                    "source": "memory.md",
+                })
+                continue
+
+            days_since = (now - last_seen).days
+            if days_since >= 30:
+                area = entry.get("area", "") or "general"
+                if area.startswith("project:"):
+                    target_rel = f"projects/{area[8:]}.md"
+                elif area.startswith("domain:"):
+                    target_rel = f"domains/{area[7:]}.md"
+                else:
+                    target_rel = "domains/general.md"
+
+                results["stale_hot"].append({
+                    "id": entry["id"],
+                    "last_seen": last_seen.strftime("%Y-%m-%d"),
+                    "days_stale": days_since,
+                    "action": "HOT_TO_WARM",
+                    "target": target_rel,
+                    "source": "memory.md",
+                    "entry": entry,
+                })
+
+            recurrence = entry.get("recurrence_count", 0)
+            if recurrence >= 3:
+                results["promote_candidates"].append({
+                    "id": entry["id"],
+                    "recurrence_count": recurrence,
+                    "action": "PROMOTE_CANDIDATE",
+                    "source": "memory.md",
+                })
+
+    warm_files: List[Path] = []
+    for subdir in ["projects", "domains"]:
+        warm_files.extend((base_dir / subdir).rglob("*.md"))
+
+    for warm_file in warm_files:
+        text = warm_file.read_text(encoding="utf-8")
+        entries = _parse_entries(text)
+        rel_path = str(warm_file.relative_to(base_dir))
+        for entry in entries:
+            last_seen = entry.get("last_seen")
+            if last_seen is None:
+                last_seen = _parse_date(entry.get("date_str", ""))
+
+            if last_seen is None:
+                results["insufficient_metadata"].append({
+                    "id": entry["id"],
+                    "reason": "missing Last-Seen",
+                    "source": rel_path,
+                })
+                continue
+
+            days_since = (now - last_seen).days
+            if days_since >= 90:
+                archive_name = warm_file.stem + ".md"
+                target_rel = f"archive/{archive_name}"
+
+                results["stale_warm"].append({
+                    "id": entry["id"],
+                    "last_seen": last_seen.strftime("%Y-%m-%d"),
+                    "days_stale": days_since,
+                    "action": "WARM_TO_COLD",
+                    "target": target_rel,
+                    "source": rel_path,
+                    "entry": entry,
+                })
+
+            recurrence = entry.get("recurrence_count", 0)
+            if recurrence >= 3:
+                results["promote_candidates"].append({
+                    "id": entry["id"],
+                    "recurrence_count": recurrence,
+                    "action": "PROMOTE_CANDIDATE",
+                    "source": rel_path,
+                })
+
+    if not dry_run:
+        if results["stale_hot"]:
+            memory_text = memory_file.read_text(encoding="utf-8") if memory_file.exists() else ""
+            entries_to_remove = [r["entry"] for r in results["stale_hot"]]
+
+            by_target: Dict[str, List[Dict[str, Any]]] = {}
+            for r in results["stale_hot"]:
+                by_target.setdefault(r["target"], []).append(r)
+
+            for target_rel, items in by_target.items():
+                target_path = base_dir / target_rel
+                for item in items:
+                    append_block_to_file(target_path, item["entry"]["full_text"])
+
+            new_memory_text = _remove_entries_from_text(memory_text, entries_to_remove)
+            if new_memory_text != memory_text:
+                memory_file.write_text(new_memory_text, encoding="utf-8")
+
+        if results["stale_warm"]:
+            by_source: Dict[str, List[Dict[str, Any]]] = {}
+            for r in results["stale_warm"]:
+                by_source.setdefault(r["source"], []).append(r)
+
+            for source_rel, items in by_source.items():
+                source_path = base_dir / source_rel
+                source_text = source_path.read_text(encoding="utf-8")
+                entries_to_remove = [item["entry"] for item in items]
+
+                by_target2: Dict[str, List[Dict[str, Any]]] = {}
+                for item in items:
+                    by_target2.setdefault(item["target"], []).append(item)
+
+                for target_rel, target_items in by_target2.items():
+                    target_path = base_dir / target_rel
+                    for item in target_items:
+                        append_block_to_file(target_path, item["entry"]["full_text"])
+
+                new_source_text = _remove_entries_from_text(source_text, entries_to_remove)
+                if new_source_text != source_text:
+                    source_path.write_text(new_source_text, encoding="utf-8")
+
+    if fmt == "json":
+        json_out = {
+            "stale_hot": [{k: v for k, v in r.items() if k != "entry"} for r in results["stale_hot"]],
+            "stale_warm": [{k: v for k, v in r.items() if k != "entry"} for r in results["stale_warm"]],
+            "promote_candidates": results["promote_candidates"],
+            "insufficient_metadata": results["insufficient_metadata"],
+        }
+        import json
+        print(json.dumps(json_out, indent=2))
+    else:
+        print("[maintain] Scanning memory tiers...")
+        has_any = bool(results["stale_hot"] or results["stale_warm"] or results["promote_candidates"] or results["insufficient_metadata"])
+        if results["stale_hot"]:
+            print("HOT -> WARM (stale >= 30 days):")
+            for r in results["stale_hot"]:
+                print(f"  - {r['id']}: Last-Seen {r['last_seen']} ({r['days_stale']} days ago) -> {r['target']}")
+        if results["stale_warm"]:
+            print("WARM -> COLD (stale >= 90 days):")
+            for r in results["stale_warm"]:
+                print(f"  - {r['id']} in {r['source']}: Last-Seen {r['last_seen']} ({r['days_stale']} days ago) -> {r['target']}")
+        if results["promote_candidates"]:
+            print("Promotion candidates:")
+            for r in results["promote_candidates"]:
+                print(f"  - {r['id']}: Recurrence-Count={r['recurrence_count']}")
+        if results["insufficient_metadata"]:
+            print("Insufficient metadata:")
+            for r in results["insufficient_metadata"]:
+                print(f"  - {r['id']}: {r['reason']}")
+        if not has_any:
+            print("  All entries healthy. No action needed.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -602,6 +974,8 @@ Examples:
   %(prog)s --root /path/to/workspace search telegram
   %(prog)s --root /path/to/workspace status
   %(prog)s status --root /path/to/workspace --format json
+  %(prog)s --root /path/to/workspace maintain
+  %(prog)s --root /path/to/workspace maintain --apply
         """,
     )
     parser.add_argument(
@@ -676,6 +1050,13 @@ Examples:
     p_logf.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
     p_logf.add_argument("--force", "-f", action="store_true", help="Skip dedup check")
     p_logf.set_defaults(func=cmd_log_feature)
+
+    p_maintain = sub.add_parser("maintain", help="Maintain memory lifecycle")
+    _add_root(p_maintain)
+    p_maintain.add_argument("--apply", dest="dry_run", action="store_false", help="Apply moves (default is dry-run)")
+    p_maintain.add_argument("--dry-run", dest="dry_run", action="store_true", default=True, help="Show what would be done without applying")
+    p_maintain.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+    p_maintain.set_defaults(func=cmd_maintain)
 
     return parser
 
