@@ -1,12 +1,12 @@
 ---
 name: self-improvement
-description: "Capture durable lessons from debugging, user corrections, missing capabilities, and repeated workflow friction so future sessions avoid the same mistakes. Hybrid design: actual-self-improvement execution core + self-improving-compound HOT/WARM/COLD memory tiers + legacy promotion/hook guidance. Use when a non-obvious failure is diagnosed, the user corrects or updates the agent, a workaround or project convention is discovered, a capability is missing, a solved issue should be promoted into shared memory, or you should review prior learnings before changing a known-problem area. Do not use for trivial typos, expected failures, straightforward retries, or one-off noise with no reusable lesson."
+description: "Capture durable lessons from debugging, user corrections, missing capabilities, and repeated workflow friction so future sessions avoid the same mistakes. Hybrid design: actual-self-improvement execution core + self-improving-compound HOT/WARM/COLD memory tiers + legacy promotion/hook guidance. Use immediately when a non-obvious failure is diagnosed, before the final reply after a workaround succeeds, when the user corrects or updates the agent, when a project/tool convention is discovered, when a missing capability is requested, or when a solved issue should be promoted into shared memory. Also use to audit whether a lesson was captured. Do not use for trivial typos, expected failures, straightforward retries, or one-off noise with no reusable lesson."
 compatibility: "Portable Agent Skills format. Core workflow is agent-agnostic. Bundled helpers require Python 3.9+; hook helpers require bash. No network access is required."
 metadata:
-  version: "5.0.0"
+  version: "6.0.0"
   original_slug: "self-improving-compound"
   category: "workflow"
-  author: "Hybrid adaptation from actual-self-improvement and self-improving-compound"
+  author: "Hybrid adaptation from actual-self-improvement, self-improving-compound, and Hermes Agent architecture"
 ---
 
 # Self-Improvement
@@ -16,6 +16,17 @@ Capture, review, promote, and extract durable lessons so future sessions avoid r
 ## Core idea
 
 Use this skill for **reusable learning**, not for every bump in the road.
+
+### Mandatory capture gate
+
+Before a final reply, run this quick check:
+
+- Did the task include a non-obvious failure, API/tool quirk, or format mismatch?
+- Did a workaround or environment-specific convention make the task succeed?
+- Did the user correct a fact, preference, workflow, or expectation?
+- Would repeating this lesson save time or prevent damage later?
+
+If yes, **search existing learnings first, then log the lesson before replying**. Do not rely on a “mental note.”
 
 A good entry usually has at least one of these properties:
 - It corrected a wrong assumption.
@@ -36,10 +47,10 @@ This skill merges three design lineages into one portable package:
 | **self-improving-compound** | Memory architecture | HOT/WARM/COLD tiers (`memory.md`, `projects/`, `domains/`, `archive/`), `corrections.md` quick table, `index.md` auto-index |
 | **self-improving-agent-local** | Promotion & hooks | Quantified promotion thresholds, OpenClaw hook guidance, pattern-key recurrence rules |
 
-### Directory layout under `.learnings/self-improving/`
+### Directory layout under `learnings/self-improving/`
 
 ```
-.learnings/self-improving/
+learnings/self-improving/
 ├── memory.md              # HOT tier (always loaded)
 ├── corrections.md         # Structured correction log (quick table)
 ├── index.md               # Auto-maintained index + Pattern-Key index
@@ -58,12 +69,12 @@ There are **two different roots** in this skill:
    - `hooks/...`
 
 2. **Workspace root** — where the project or active workspace lives:
-   - `.learnings/self-improving/memory.md`
-   - `.learnings/self-improving/corrections.md`
-   - `.learnings/self-improving/index.md`
-   - `.learnings/self-improving/projects/`
-   - `.learnings/self-improving/domains/`
-   - `.learnings/self-improving/archive/`
+   - `learnings/self-improving/memory.md`
+   - `learnings/self-improving/corrections.md`
+   - `learnings/self-improving/index.md`
+   - `learnings/self-improving/projects/`
+   - `learnings/self-improving/domains/`
+   - `learnings/self-improving/archive/`
    - `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `SOUL.md`, `TOOLS.md`
 
 Never write learnings into the installed skill directory. Always target the **workspace root**.
@@ -84,7 +95,7 @@ Never write learnings into the installed skill directory. Always target the **wo
 
 ### 1) Find the workspace root first
 
-Before reading or writing `.learnings/self-improving/`, determine `WORKSPACE_ROOT`.
+Before reading or writing `learnings/self-improving/`, determine `WORKSPACE_ROOT`.
 
 Good defaults:
 - the repository root for the current codebase
@@ -93,7 +104,7 @@ Good defaults:
 
 If unsure, prefer the directory containing `.git`, `AGENTS.md`, `CLAUDE.md`, or the user's active project files.
 
-### 2) Initialise `.learnings/self-improving/` if needed
+### 2) Initialise `learnings/self-improving/` if needed
 
 Use the helper instead of creating files manually:
 
@@ -102,12 +113,12 @@ python3 scripts/learnings.py --root /absolute/path/to/workspace init
 ```
 
 This creates:
-- `.learnings/self-improving/memory.md`
-- `.learnings/self-improving/corrections.md`
-- `.learnings/self-improving/index.md`
-- `.learnings/self-improving/projects/`
-- `.learnings/self-improving/domains/`
-- `.learnings/self-improving/archive/`
+- `learnings/self-improving/memory.md`
+- `learnings/self-improving/corrections.md`
+- `learnings/self-improving/index.md`
+- `learnings/self-improving/projects/`
+- `learnings/self-improving/domains/`
+- `learnings/self-improving/archive/`
 
 ### 3) Review existing learnings before risky or familiar work
 

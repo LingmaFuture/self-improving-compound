@@ -6,7 +6,7 @@ Merges actual-self-improvement execution core with self-improving-compound
 HOT/WARM/COLD memory tiers.
 
 Commands:
-  init            Initialize .learnings/self-improving/ structure
+  init            Initialize learnings/self-improving/ structure
   status          Show HOT/WARM/COLD tier statistics
   search          Search across all learning records
   log             Backward-compatible generic log (COR/LRN/FTR/ERR)
@@ -23,6 +23,7 @@ Global options:
 from __future__ import annotations
 
 import argparse
+import difflib
 import os
 import re
 import sys
@@ -41,7 +42,7 @@ def get_now() -> datetime:
 def resolve_root(args: argparse.Namespace) -> Optional[str]:
     return getattr(args, "local_root", None) or args.root
 
-SUBDIR_NAME = ".learnings/self-improving"
+SUBDIR_NAME = "learnings/self-improving"
 
 ID_PREFIXES = {
     "COR": "COR",
@@ -316,6 +317,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     pkeys = extract_pattern_keys(base_dir)
 
     fmt = getattr(args, "format", "text") or "text"
+
     if fmt == "json":
         import json
         out: Dict[str, Any] = {
@@ -355,6 +357,7 @@ def cmd_search(args: argparse.Namespace) -> None:
     results = search_content(base_dir, query, limit=args.limit or 20)
 
     fmt = getattr(args, "format", "text") or "text"
+
     if fmt == "json":
         import json
         print(json.dumps(results, indent=2))
@@ -367,6 +370,51 @@ def cmd_search(args: argparse.Namespace) -> None:
     print(f"[search] Found {len(results)} result(s) for '{query}':")
     for r in results:
         print(f"  {r['file']}:{r['line']} | {r['snippet'][:100]}")
+
+    # Touch matched entries across all tiers — update Last-Seen and increment Recurrence-Count
+    today = get_now().strftime("%Y-%m-%d")
+    query_lower = query.lower()
+    total_updated = 0
+
+    touch_files: List[Path] = [base_dir / "memory.md"]
+    for subdir in ["projects", "domains", "archive"]:
+        touch_files.extend((base_dir / subdir).rglob("*.md"))
+
+    for touch_file in touch_files:
+        if not touch_file.exists():
+            continue
+        try:
+            text = touch_file.read_text(encoding="utf-8")
+            entries = _parse_entries(text)
+            updated = 0
+            for entry in entries:
+                if query_lower in entry.get("full_text", "").lower():
+                    old_text = entry["full_text"]
+                    body = entry["body"]
+                    meta = entry.get("metadata", {})
+                    rc = int(meta.get("Recurrence-Count", "0"))
+                    new_body = body
+                    new_body = re.sub(
+                        r"- \*\*Last-Seen\*\*:.*",
+                        f"- **Last-Seen**: {today}",
+                        new_body
+                    )
+                    new_body = re.sub(
+                        r"- \*\*Recurrence-Count\*\*: \d+",
+                        f"- **Recurrence-Count**: {rc + 1}",
+                        new_body
+                    )
+                    new_full = old_text.replace(body, new_body)
+                    text = text.replace(old_text, new_full)
+                    updated += 1
+            if updated > 0:
+                touch_file.write_text(text, encoding="utf-8")
+                total_updated += updated
+        except Exception:
+            pass
+
+    if total_updated > 0:
+        print(f"[search] Updated Recurrence-Count for {total_updated} entry/entries across all tiers")
 
 
 def _append_to_memory(base_dir: Path, entry: str) -> None:
@@ -495,12 +543,30 @@ def remove_block_from_file(path: Path, block_text: str) -> None:
 
 
 def _do_dedup_check(base_dir: Path, content: str, force: bool) -> bool:
-    existing = search_content(base_dir, content, limit=3)
-    if existing:
-        print(f"[log] Potential duplicates found ({len(existing)}):")
-        for e in existing:
-            snippet = e['snippet'][:80]
+    existing = search_content(base_dir, content, limit=5)
+    if not existing:
+        return True
+    exact = []
+    similar = []
+    for e in existing:
+        snippet = e["snippet"]
+        ratio = difflib.SequenceMatcher(None, content.lower(), snippet.lower()).ratio()
+        if ratio > 0.8:
+            exact.append(e)
+        elif ratio > 0.6:
+            similar.append(e)
+    if exact:
+        print(f"[log] Potential exact duplicates ({len(exact)}):")
+        for e in exact:
+            snippet = e["snippet"][:80]
             print(f"  - {e['file']}:{e['line']}: {snippet}...")
+    if similar:
+        print(f"[log] Similar entries found ({len(similar)}):")
+        for e in similar:
+            snippet = e["snippet"][:80]
+            ratio = difflib.SequenceMatcher(None, content.lower(), snippet.lower()).ratio()
+            print(f"  - {e['file']}:{e['line']} (similarity={ratio:.0%}): {snippet}...")
+    if exact or similar:
         if not force:
             print("[log] Aborting. Use --force to skip dedup check.")
             return False
@@ -556,6 +622,7 @@ def cmd_log_learning(args: argparse.Namespace) -> None:
     summary = redact_secrets(args.summary or "")
     details = redact_secrets(args.details or "")
     pattern_key = args.pattern or ""
+    area = getattr(args, "area", "") or ""
 
     if not summary:
         print("[log-learning] Error: --summary required", file=sys.stderr)
@@ -576,6 +643,8 @@ def cmd_log_learning(args: argparse.Namespace) -> None:
     section += f"\n- **Type**: LRN\n- **Summary**: {summary}\n"
     if details:
         section += f"- **Details**: {details}\n"
+    if area:
+        section += f"- **Area**: {area}\n"
     section += f"- **First-Seen**: {today}\n"
     section += f"- **Last-Seen**: {today}\n"
     section += f"- **Recurrence-Count**: 1\n"
@@ -594,6 +663,7 @@ def cmd_log_error(args: argparse.Namespace) -> None:
     summary = redact_secrets(args.summary or "")
     details = redact_secrets(args.details or "")
     pattern_key = args.pattern or ""
+    area = getattr(args, "area", "") or ""
 
     if not summary:
         print("[log-error] Error: --summary required", file=sys.stderr)
@@ -614,6 +684,8 @@ def cmd_log_error(args: argparse.Namespace) -> None:
     section += f"\n- **Type**: ERR\n- **Summary**: {summary}\n"
     if details:
         section += f"- **Details**: {details}\n"
+    if area:
+        section += f"- **Area**: {area}\n"
     section += f"- **First-Seen**: {today}\n"
     section += f"- **Last-Seen**: {today}\n"
     section += f"- **Recurrence-Count**: 1\n"
@@ -632,6 +704,7 @@ def cmd_log_feature(args: argparse.Namespace) -> None:
     summary = redact_secrets(args.summary or "")
     details = redact_secrets(args.details or "")
     pattern_key = args.pattern or ""
+    area = getattr(args, "area", "") or ""
 
     if not summary:
         print("[log-feature] Error: --summary required", file=sys.stderr)
@@ -652,6 +725,8 @@ def cmd_log_feature(args: argparse.Namespace) -> None:
     section += f"\n- **Type**: FTR\n- **Summary**: {summary}\n"
     if details:
         section += f"- **Details**: {details}\n"
+    if area:
+        section += f"- **Area**: {area}\n"
     section += f"- **First-Seen**: {today}\n"
     section += f"- **Last-Seen**: {today}\n"
     section += f"- **Recurrence-Count**: 1\n"
@@ -671,6 +746,7 @@ def cmd_log(args: argparse.Namespace) -> None:
     content = redact_secrets(args.content or "")
     pattern_key = args.pattern or ""
     correct = redact_secrets(args.correct or "")
+    area = getattr(args, "area", "") or ""
 
     if not content:
         print("[log] Error: content required", file=sys.stderr)
@@ -698,6 +774,8 @@ def cmd_log(args: argparse.Namespace) -> None:
         section += f"\n- **Type**: {log_type}\n- **Summary**: {content}\n"
         if correct:
             section += f"- **Correct Answer**: {correct}\n"
+        if area:
+            section += f"- **Area**: {area}\n"
         section += f"- **First-Seen**: {today}\n"
         section += f"- **Last-Seen**: {today}\n"
         section += f"- **Recurrence-Count**: 1\n"
@@ -792,6 +870,7 @@ def cmd_maintain(args: argparse.Namespace) -> None:
         "stale_hot": [],
         "stale_warm": [],
         "promote_candidates": [],
+        "promote_to_hot": [],
         "insufficient_metadata": [],
     }
 
@@ -879,6 +958,17 @@ def cmd_maintain(args: argparse.Namespace) -> None:
 
             recurrence = entry.get("recurrence_count", 0)
             if recurrence >= 3:
+                days_since_last = days_since(entry.get("metadata", {}).get("Last-Seen", ""))
+                if last_seen and days_since_last is not None and days_since_last <= 7:
+                    results["promote_to_hot"].append({
+                        "id": entry["id"],
+                        "last_seen": last_seen.strftime("%Y-%m-%d"),
+                        "days_since": days_since_last,
+                        "recurrence_count": recurrence,
+                        "action": "WARM_TO_HOT",
+                        "source": rel_path,
+                        "entry": entry,
+                    })
                 results["promote_candidates"].append({
                     "id": entry["id"],
                     "recurrence_count": recurrence,
@@ -927,6 +1017,19 @@ def cmd_maintain(args: argparse.Namespace) -> None:
                 if new_source_text != source_text:
                     source_path.write_text(new_source_text, encoding="utf-8")
 
+    # WARM→HOT: promote entries with Recurrence-Count >= 3 and Last-Seen within 7 days
+    if not dry_run and results.get("promote_to_hot"):
+        memory_text = memory_file.read_text(encoding="utf-8") if memory_file.exists() else ""
+        for r in results["promote_to_hot"]:
+            # Remove from WARM file
+            source_path = base_dir / r["source"]
+            if source_path.exists():
+                source_text = source_path.read_text(encoding="utf-8")
+                source_text = _remove_entries_from_text(source_text, [r["entry"]])
+                source_path.write_text(source_text, encoding="utf-8")
+            # Append to HOT memory.md
+            append_block_to_file(memory_file, r["entry"]["full_text"])
+
     if fmt == "json":
         json_out = {
             "stale_hot": [{k: v for k, v in r.items() if k != "entry"} for r in results["stale_hot"]],
@@ -958,6 +1061,87 @@ def cmd_maintain(args: argparse.Namespace) -> None:
         if not has_any:
             print("  All entries healthy. No action needed.")
 
+
+
+def cmd_promote(args: argparse.Namespace) -> None:
+    """Promote an entry from its current tier to a target memory file."""
+    base_dir = get_base_dir(resolve_root(args))
+    ensure_structure(base_dir)
+    entry_id = args.entry_id
+    target_file = args.to or ""
+    if not target_file:
+        print("[promote] Error: --to TARGET is required", file=sys.stderr)
+        sys.exit(1)
+    found_entry = None
+    found_source = None
+    for src in [base_dir / "memory.md"] + list((base_dir / "projects").rglob("*.md")) + list((base_dir / "domains").rglob("*.md")):
+        if not src.exists():
+            continue
+        text = src.read_text(encoding="utf-8")
+        entries = _parse_entries(text)
+        for e in entries:
+            if e["id"] == entry_id:
+                found_entry = e
+                found_source = src
+                break
+        if found_entry:
+            break
+    if not found_entry:
+        print(f"[promote] Entry {entry_id} not found", file=sys.stderr)
+        sys.exit(1)
+    target_path = base_dir.parent / target_file if "/" in target_file or not target_file.endswith(".md") else base_dir.parent / target_file
+    if not target_path.parent.exists():
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+    promoted_text = found_entry["full_text"] + f"\n- **Status**: promoted\n- **Promoted-To**: {target_file}\n"
+    append_block_to_file(target_path, promoted_text)
+    src_text = found_source.read_text(encoding="utf-8")
+    src_text = _remove_entries_from_text(src_text, [found_entry])
+    found_source.write_text(src_text, encoding="utf-8")
+    print(f"[promote] Moved {entry_id} from {found_source.relative_to(base_dir.parent)} to {target_file}")
+    update_index(base_dir)
+
+
+def cmd_edit(args: argparse.Namespace) -> None:
+    """Edit metadata of an existing entry in-place."""
+    base_dir = get_base_dir(resolve_root(args))
+    ensure_structure(base_dir)
+    entry_id = args.entry_id
+    new_status = getattr(args, "status", None)
+    new_last_seen = getattr(args, "last_seen", None)
+    new_recurrence = getattr(args, "recurrence", None)
+
+    if not any([new_status, new_last_seen, new_recurrence]):
+        print("[edit] Error: at least one of --status, --last-seen, --recurrence is required", file=sys.stderr)
+        sys.exit(1)
+
+    found = False
+    for src in [base_dir / "memory.md"] + list((base_dir / "projects").rglob("*.md")) + list((base_dir / "domains").rglob("*.md")) + list((base_dir / "archive").rglob("*.md")):
+        if not src.exists():
+            continue
+        text = src.read_text(encoding="utf-8")
+        entries = _parse_entries(text)
+        for e in entries:
+            if e["id"] == entry_id:
+                old_text = e["full_text"]
+                new_text = old_text
+                if new_status:
+                    new_text = re.sub(r"- \*\*Status\*\*:.*", f"- **Status**: {new_status}", new_text)
+                    if "- **Status**:" not in new_text:
+                        new_text = new_text.rstrip() + f"\n- **Status**: {new_status}\n"
+                if new_last_seen:
+                    new_text = re.sub(r"- \*\*Last-Seen\*\*:.*", f"- **Last-Seen**: {new_last_seen}", new_text)
+                if new_recurrence is not None:
+                    new_text = re.sub(r"- \*\*Recurrence-Count\*\*: \\d+", f"- **Recurrence-Count**: {new_recurrence}", new_text)
+                text = text.replace(old_text, new_text)
+                src.write_text(text, encoding="utf-8")
+                print(f"[edit] Updated {entry_id}")
+                found = True
+                break
+        if found:
+            break
+    if not found:
+        print(f"[edit] Entry {entry_id} not found", file=sys.stderr)
+        sys.exit(1)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -994,7 +1178,7 @@ Examples:
             help="Workspace root (overrides global --root)",
         )
 
-    p_init = sub.add_parser("init", help="Initialize .learnings/self-improving/ structure")
+    p_init = sub.add_parser("init", help="Initialize learnings/self-improving/ structure")
     _add_root(p_init)
     p_init.set_defaults(func=cmd_init)
 
@@ -1016,6 +1200,7 @@ Examples:
     p_log.add_argument("--type", "-t", default="LRN", help="Entry type (COR/LRN/FTR/ERR)")
     p_log.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
     p_log.add_argument("--correct", "-c", default="", help="Correct answer (for COR type)")
+    p_log.add_argument("--area", "-a", default="", help="Area (project:name or domain:name)")
     p_log.add_argument("--force", "-f", action="store_true", help="Skip dedup check")
     p_log.set_defaults(func=cmd_log)
 
@@ -1024,6 +1209,7 @@ Examples:
     p_logc.add_argument("--summary", "-s", required=True, help="What went wrong")
     p_logc.add_argument("--correct", "-c", required=True, help="The correct answer")
     p_logc.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
+    p_logc.add_argument("--area", "-a", default="", help="Area (project:name or domain:name)")
     p_logc.add_argument("--force", "-f", action="store_true", help="Skip dedup check")
     p_logc.set_defaults(func=cmd_log_correction)
 
@@ -1032,6 +1218,7 @@ Examples:
     p_logl.add_argument("--summary", "-s", required=True, help="Learning summary")
     p_logl.add_argument("--details", "-d", default="", help="Learning details")
     p_logl.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
+    p_logl.add_argument("--area", "-a", default="", help="Area (project:name or domain:name)")
     p_logl.add_argument("--force", "-f", action="store_true", help="Skip dedup check")
     p_logl.set_defaults(func=cmd_log_learning)
 
@@ -1040,6 +1227,7 @@ Examples:
     p_loge.add_argument("--summary", "-s", required=True, help="Error summary")
     p_loge.add_argument("--details", "-d", default="", help="Error details")
     p_loge.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
+    p_loge.add_argument("--area", "-a", default="", help="Area (project:name or domain:name)")
     p_loge.add_argument("--force", "-f", action="store_true", help="Skip dedup check")
     p_loge.set_defaults(func=cmd_log_error)
 
@@ -1048,6 +1236,7 @@ Examples:
     p_logf.add_argument("--summary", "-s", required=True, help="Feature summary")
     p_logf.add_argument("--details", "-d", default="", help="Feature details")
     p_logf.add_argument("--pattern", "-p", default="", help="Pattern-Key identifier")
+    p_logf.add_argument("--area", "-a", default="", help="Area (project:name or domain:name)")
     p_logf.add_argument("--force", "-f", action="store_true", help="Skip dedup check")
     p_logf.set_defaults(func=cmd_log_feature)
 
@@ -1057,6 +1246,20 @@ Examples:
     p_maintain.add_argument("--dry-run", dest="dry_run", action="store_true", default=True, help="Show what would be done without applying")
     p_maintain.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
     p_maintain.set_defaults(func=cmd_maintain)
+
+    p_promote = sub.add_parser("promote", help="Promote an entry to a target memory file")
+    _add_root(p_promote)
+    p_promote.add_argument("entry_id", help="Entry ID (e.g., LRN-20260512-001)")
+    p_promote.add_argument("--to", "-t", required=True, help="Target file path (e.g., CLAUDE.md or projects/foo.md)")
+    p_promote.set_defaults(func=cmd_promote)
+
+    p_edit = sub.add_parser("edit", help="Edit entry metadata in-place")
+    _add_root(p_edit)
+    p_edit.add_argument("entry_id", help="Entry ID (e.g., COR-20260512-001)")
+    p_edit.add_argument("--status", choices=["pending", "in_progress", "resolved", "wont_fix", "promoted", "promoted_to_skill"], help="New status")
+    p_edit.add_argument("--last-seen", help="New Last-Seen date (YYYY-MM-DD)")
+    p_edit.add_argument("--recurrence", type=int, help="New Recurrence-Count")
+    p_edit.set_defaults(func=cmd_edit)
 
     return parser
 

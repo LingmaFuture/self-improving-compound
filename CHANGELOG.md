@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [6.0.0] - 2026-05-12
+
+### Added
+- **`.learnings/` directory renamed to `learnings/`** (no dot prefix) — all paths updated across scripts, hooks, docs, and evals.
+- **`--area` parameter** for all `log-*` commands — supports `project:name` and `domain:name` routing for proper tier placement.
+- **Auto-increment Recurrence-Count** — search command now touches matched HOT entries, updating `Last-Seen` and incrementing `Recurrence-Count`.
+- **WARM→HOT reverse promotion** — `maintain` now detects entries with `Recurrence-Count >= 3` within 7 days and promotes them back to HOT tier.
+- **`promote` command** (`promote ID --to FILE`) — moves entries to promotion targets (AGENTS.md, CLAUDE.md, etc.) with traceable pointers.
+- **`edit` command** (`edit ID --status STATUS --last-seen DATE --recurrence N`) — updates entry metadata in-place.
+- **`scripts/daily-memory.sh`** — comprehensive daily memory template generator with structured sections for sessions, decisions, errors, learnings, and self-improvement audits.
+- **`references/hermes-integration.md`** — documents selectively absorbed Hermes Agent architecture concepts kept lean for this system.
+- **`index.md` now includes Skill Registry** — Pattern-Key index doubles as lightweight skill discovery inspired by Hermes's Skills Hub.
+
+### Changed
+- **Dedup improved** — `_do_dedup_check()` now uses `difflib.SequenceMatcher` for semantic similarity detection (>70% threshold).
+- **SKILL.md metadata** updated to reflect Hermes Agent architecture influence.
+- **All paths** migrated from `.learnings/` to `learnings/` (87 references across 10 files).
+
+### Fixed
+- Recurrence-Count now auto-increments on search — no longer a static dead value.
+- Promotion lifecycle is now closed-loop — WARM entries can return to HOT when frequently used.
+- Missing `--area` routing fixed — WARM tier placement is now deterministic.
+
 ## [5.0.0] - 2026-05-09
 
 ### Added
@@ -16,7 +39,7 @@ All notable changes to this project will be documented in this file.
 - `CHANGELOG.md`.
 
 ### Changed
-- `scripts/learnings.py` no longer hard-codes `~/self-improving`. All data now lives under `<root>/.learnings/self-improving/`.
+- `scripts/learnings.py` no longer hard-codes `~/self-improving`. All data now lives under `<root>/learnings/self-improving/`.
 - `hooks/activator.sh` and `hooks/error-detector.sh` are now workspace-root aware and use `OPENCLAW_WORKSPACE`.
 - `index.md` now includes tier statistics and Pattern-Key index.
 

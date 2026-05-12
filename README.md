@@ -17,8 +17,9 @@ This is a **hybrid design**: actual-self-improvement serves as the execution cor
 .
 ├── SKILL.md                          # Portable AgentSkill frontmatter + rules
 ├── scripts/
-│   ├── learnings.py                  # CLI: init, status, search, log, log-*, log-correction
-│   └── extract-skill.sh              # Extract reusable skill from learnings
+│   ├── learnings.py                  # CLI: init, status, search, log, log-*, promote, edit, maintain
+│   ├── extract-skill.sh              # Extract reusable skill from learnings
+│   └── daily-memory.sh               # Generate comprehensive daily memory entries
 ├── hooks/
 │   ├── activator.sh                  # Reminder at session start
 │   └── error-detector.sh             # Suggest logging after failures
@@ -28,7 +29,9 @@ This is a **hybrid design**: actual-self-improvement serves as the execution cor
 ├── references/
 │   ├── entry-formats.md              # Full field schemas and manual templates
 │   ├── promotion-and-extraction.md   # Promotion rules and skill extraction criteria
-│   └── platform-setup.md             # Claude Code, Codex, Copilot, and OpenClaw setup
+│   ├── platform-setup.md             # Claude Code, Codex, Copilot, and OpenClaw setup
+│   ├── heartbeat-guidance.md         # Heartbeat integration for periodic checks
+│   └── hermes-integration.md         # Hermes Agent architecture concepts absorbed
 └── CHANGELOG.md
 ```
 
@@ -36,10 +39,10 @@ This is a **hybrid design**: actual-self-improvement serves as the execution cor
 
 ```
 <workspace-root>/
-└── .learnings/self-improving/
+└── learnings/self-improving/
     ├── memory.md              # HOT tier (always loaded)
     ├── corrections.md         # Structured correction log (quick table)
-    ├── index.md               # Auto-maintained index + Pattern-Key index
+    │   │   ├── index.md               # Auto-maintained index + Pattern-Key index + Skill Registry + Skill Registry
     ├── projects/              # WARM tier (project-specific)
     ├── domains/               # WARM tier (domain-specific)
     └── archive/               # COLD tier (inactive)
@@ -96,8 +99,17 @@ python3 scripts/learnings.py --root /path/to/workspace maintain
 python3 scripts/learnings.py --root /path/to/workspace maintain --format json
 python3 scripts/learnings.py --root /path/to/workspace maintain --apply
 
-# 7. Extract a skill from accumulated learnings
+# 7. Promote a proven learning to project memory
+python3 scripts/learnings.py --root /path/to/workspace promote LRN-20260512-001 --to CLAUDE.md
+
+# 8. Edit entry status/metadata
+python3 scripts/learnings.py --root /path/to/workspace edit COR-20260512-001 --status resolved
+
+# 9. Extract a skill from accumulated learnings
 bash scripts/extract-skill.sh my-skill-name /path/to/workspace
+
+# 10. Generate comprehensive daily memory
+bash scripts/daily-memory.sh /path/to/workspace
 ```
 
 `--root` can be placed either before the subcommand (global) or after it (command-local). Both forms are supported.
@@ -107,7 +119,7 @@ bash scripts/extract-skill.sh my-skill-name /path/to/workspace
 There are **two different roots**:
 
 1. **Skill root** — where this repository lives (scripts, references, hooks).
-2. **Workspace root** — where `.learnings/self-improving/` is created and written.
+2. **Workspace root** — where `learnings/self-improving/` is created and written.
 
 Never write learnings into the skill directory. Always target the workspace root.
 
@@ -122,7 +134,7 @@ Dates and IDs use the system local timezone by default. Set `SOURCE_DATE_EPOCH` 
 
 | Source | Feature | How It's Integrated |
 |--------|---------|---------------------|
-| **stock** | HOT/WARM/COLD tiers | Native directory structure under `.learnings/self-improving/` |
+| **stock** | HOT/WARM/COLD tiers | Native directory structure under `learnings/self-improving/` |
 | **stock** | Automatic promotion (30d/90d) | Enforced by `maintain` command with `--dry-run` and `--apply`; moves stale entries (not whole files) to preserve unrelated content |
 | **stock** | Namespace isolation (projects/domains/archive) | Native directory structure |
 | **tristanmanchester** | `learnings.py` CLI | Adapted to hybrid directory layout with `--root` support |
@@ -189,19 +201,19 @@ When patterns contradict, the following precedence applies:
 
 ### From `actual-self-improvement`
 
-- Move existing `.learnings/LEARNINGS.md`, `.learnings/ERRORS.md`, `.learnings/FEATURE_REQUESTS.md` into `.learnings/self-improving/` if desired, or keep them alongside.
-- The CLI now uses `--root` before the subcommand and writes to `.learnings/self-improving/` instead of `.learnings/` directly.
+- Move existing `learnings/LEARNINGS.md`, `learnings/ERRORS.md`, `learnings/FEATURE_REQUESTS.md` into `learnings/self-improving/` if desired, or keep them alongside.
+- The CLI now uses `--root` before the subcommand and writes to `learnings/self-improving/` instead of `learnings/` directly.
 - `log-learning`, `log-error`, `log-feature`, and `log-correction` are new specific commands; the old `log` subcommand is preserved for compatibility.
 
 ### From `self-improving-compound` (original)
 
-- Data was previously at `~/self-improving/`. Now it lives at `<workspace-root>/.learnings/self-improving/`.
+- Data was previously at `~/self-improving/`. Now it lives at `<workspace-root>/learnings/self-improving/`.
 - The script no longer hard-codes `~/self-improving`. Use `--root` or `OPENCLAW_WORKSPACE` to set your preferred location.
 - `corrections.md` and `memory.md` formats are preserved; `index.md` is still auto-maintained.
 
 ### From `self-improving-agent-local`
 
-- The old `.learnings/LEARNINGS.md`, `.learnings/ERRORS.md`, `.learnings/FEATURE_REQUESTS.md` structure can coexist, but the hybrid skill prefers the unified `memory.md` + `corrections.md` layout.
+- The old `learnings/LEARNINGS.md`, `learnings/ERRORS.md`, `learnings/FEATURE_REQUESTS.md` structure can coexist, but the hybrid skill prefers the unified `memory.md` + `corrections.md` layout.
 - Promotion targets (`CLAUDE.md`, `AGENTS.md`, `SOUL.md`, `TOOLS.md`) remain the same.
 
 ## Safety

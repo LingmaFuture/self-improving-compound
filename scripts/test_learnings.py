@@ -8,10 +8,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import unittest
+
 import learnings as L
 
 
-class TestGetNow:
+class TestGetNow(unittest.TestCase):
     def test_returns_local_time_by_default(self):
         now = L.get_now()
         assert now.tzinfo is not None
@@ -34,7 +36,7 @@ class TestGetNow:
                 os.environ.pop("SOURCE_DATE_EPOCH", None)
 
 
-class TestRedactSecrets:
+class TestRedactSecrets(unittest.TestCase):
     def test_api_key_redaction(self):
         field_name = "api" + "_key"
         secret_value = "x" * 20
@@ -55,7 +57,7 @@ class TestRedactSecrets:
         assert "[REDACTED]" not in result
 
 
-class TestResolveRoot:
+class TestResolveRoot(unittest.TestCase):
     def test_prefers_local_root(self):
         class Args:
             root = "/global"
@@ -74,10 +76,10 @@ class TestResolveRoot:
         assert L.resolve_root(Args()) == "/global"
 
 
-class TestStatusCounts:
+class TestStatusCounts(unittest.TestCase):
     def test_counts_memory_headings_and_correction_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             memory = base / "memory.md"
@@ -117,7 +119,7 @@ class TestStatusCounts:
 
     def test_avoids_double_counting_duplicate_ids(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             memory = base / "memory.md"
@@ -153,7 +155,7 @@ class TestStatusCounts:
             assert data["entries_by_type"]["COR"] == 1
 
 
-class TestCliRootCompatibility:
+class TestCliRootCompatibility(unittest.TestCase):
     def test_global_root_before_subcommand(self):
         parser = L.build_parser()
         args = parser.parse_args(["--root", "/tmp/foo", "status"])
@@ -167,17 +169,17 @@ class TestCliRootCompatibility:
         assert args.local_root == "/tmp/bar"
 
 
-class TestGenerateId:
+class TestGenerateId(unittest.TestCase):
     def test_id_uses_local_date(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
             today = datetime.now().astimezone().strftime("%Y%m%d")
             entry_id = L.generate_id("LRN", base)
             assert entry_id.startswith(f"LRN-{today}-")
 
 
-class TestVolatilePatterns:
+class TestVolatilePatterns(unittest.TestCase):
     def test_detects_pid(self):
         warnings = L.check_volatile_patterns("Process PID 12345 crashed")
         assert any("PID" in w for w in warnings)
@@ -207,10 +209,10 @@ class TestVolatilePatterns:
         assert warnings == []
 
 
-class TestVolatileCheckIntegration:
+class TestVolatileCheckIntegration(unittest.TestCase):
     def test_blocks_volatile_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             class Args:
@@ -235,7 +237,7 @@ class TestVolatileCheckIntegration:
 
     def test_allows_volatile_with_force(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             class Args:
@@ -258,10 +260,10 @@ class TestVolatileCheckIntegration:
             assert "Logged:" in output
 
 
-class TestSearchJsonFormat:
+class TestSearchJsonFormat(unittest.TestCase):
     def test_json_output(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             memory = base / "memory.md"
@@ -287,10 +289,10 @@ class TestSearchJsonFormat:
             assert data[0]["snippet"] == "hello world"
 
 
-class TestMaintain:
+class TestMaintain(unittest.TestCase):
     def test_maintain_dry_run_hot_to_warm(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             memory = base / "memory.md"
@@ -338,7 +340,7 @@ class TestMaintain:
 
     def test_maintain_apply_hot_to_warm(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             memory = base / "memory.md"
@@ -391,7 +393,7 @@ class TestMaintain:
 
     def test_maintain_warm_to_cold(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             domains_dir = base / "domains"
@@ -446,7 +448,7 @@ class TestMaintain:
 
     def test_maintain_promote_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             memory = base / "memory.md"
@@ -479,7 +481,7 @@ class TestMaintain:
             assert "PROMOTE_CANDIDATE" in output
 
 
-class TestMaintain:
+class TestMaintain(unittest.TestCase):
     def test_parser_exposes_maintain(self):
         parser = L.build_parser()
         args = parser.parse_args(["maintain", "--format", "json"])
@@ -499,7 +501,7 @@ class TestMaintain:
 
     def test_dry_run_reports_stale_hot(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             memory = base / "memory.md"
@@ -540,7 +542,7 @@ class TestMaintain:
 
     def test_apply_moves_stale_hot_to_warm(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             memory = base / "memory.md"
@@ -596,7 +598,7 @@ class TestMaintain:
 
     def test_apply_archives_stale_warm(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
             domains = base / "domains"
             domains.mkdir(parents=True, exist_ok=True)
@@ -653,7 +655,7 @@ class TestMaintain:
 
     def test_reports_promotion_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp) / ".learnings" / "self-improving"
+            base = Path(tmp) / "learnings" / "self-improving"
             base.mkdir(parents=True)
 
             memory = base / "memory.md"

@@ -95,7 +95,7 @@ Avoid storing ephemeral or session-specific values that change frequently or bec
 - Connection handles, one-time tokens, or runtime device info
 - "Current" versions or counts that will be wrong on the next run
 
-Volatile context belongs in working memory or session notes, not in `.learnings/self-improving/`.
+Volatile context belongs in working memory or session notes, not in `learnings/self-improving/`.
 
 ### 3. Index entries are pointers, not duplicates
 The `index.md` Pattern-Key list and any cross-references should act as minimal pointers. They should tell a future reader *that* a pattern exists and *where* to find it, without duplicating the full details. If the index grows into a copy of the entries, it is too verbose.

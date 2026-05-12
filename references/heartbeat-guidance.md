@@ -17,12 +17,12 @@ Add this to your workspace `HEARTBEAT.md` or equivalent recurring-check file:
 - If the report shows only healthy entries or minor recommendations, return `HEARTBEAT_OK`
 - If the report shows clearly safe moves (e.g., stale HOT entries with unambiguous WARM targets), you may run `maintain --apply` automatically
 - If the report shows ambiguous conflicts, promotion candidates, or missing metadata, log a recommendation and ask the user instead of applying
-- Update `.learnings/self-improving/heartbeat-state.md` with the last run timestamp and result
+- Update `learnings/self-improving/heartbeat-state.md` with the last run timestamp and result
 ```
 
 ## State file template
 
-Create `.learnings/self-improving/heartbeat-state.md` to track heartbeat activity:
+Create `learnings/self-improving/heartbeat-state.md` to track heartbeat activity:
 
 ```markdown
 # Self-Improving Heartbeat State
@@ -69,4 +69,4 @@ fi
 
 ## Integration with OpenClaw
 
-If your workspace uses an OpenClaw `HEARTBEAT.md`, add the snippet above under a `## Self-Improving Memory Check` heading. The skill will then participate in the existing heartbeat flow without adding new files outside `.learnings/self-improving/`.
+If your workspace uses an OpenClaw `HEARTBEAT.md`, add the snippet above under a `## Self-Improving Memory Check` heading. The skill will then participate in the existing heartbeat flow without adding new files outside `learnings/self-improving/`.
