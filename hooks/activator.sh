@@ -2,7 +2,7 @@
 set -euo pipefail
 
 WORKSPACE_ROOT="${OPENCLAW_WORKSPACE:-$(pwd)}"
-MEMORY_FILE="$WORKSPACE_ROOT/learnings/self-improving/memory.md"
+MEMORY_FILE="$WORKSPACE_ROOT/learning/self-improving/memory.md"
 
 if [ ! -f "$MEMORY_FILE" ]; then
     exit 0

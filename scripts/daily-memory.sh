@@ -214,7 +214,7 @@ SECTION_SEPARATOR
 - [ ] [Item 3 — context and priority]
 
 ## Self-Improvement Audit
-- [ ] Did I capture all non-obvious failures to \`learnings/self-improving/\`?
+- [ ] Did I capture all non-obvious failures to \`learning/self-improving/\`?
 - [ ] Did any Pattern-Key reach Recurrence-Count >= 3?
 - [ ] Did I promote any learnings to project or domain memory?
 - [ ] Did I identify any new reusable skills?

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 WORKSPACE_ROOT="${OPENCLAW_WORKSPACE:-$(pwd)}"
-CORRECTIONS_FILE="$WORKSPACE_ROOT/learnings/self-improving/corrections.md"
+CORRECTIONS_FILE="$WORKSPACE_ROOT/learning/self-improving/corrections.md"
 
 ERROR_TYPE="${1:-general}"
 ERROR_DETAIL="${2:-}"

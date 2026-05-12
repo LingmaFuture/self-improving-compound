@@ -39,7 +39,7 @@ This is a **hybrid design**: actual-self-improvement serves as the execution cor
 
 ```
 <workspace-root>/
-└── learnings/self-improving/
+└── learning/self-improving/
     ├── memory.md              # HOT tier (always loaded)
     ├── corrections.md         # Structured correction log (quick table)
     │   │   ├── index.md               # Auto-maintained index + Pattern-Key index + Skill Registry + Skill Registry
@@ -119,7 +119,7 @@ bash scripts/daily-memory.sh /path/to/workspace
 There are **two different roots**:
 
 1. **Skill root** — where this repository lives (scripts, references, hooks).
-2. **Workspace root** — where `learnings/self-improving/` is created and written.
+2. **Workspace root** — where `learning/self-improving/` is created and written.
 
 Never write learnings into the skill directory. Always target the workspace root.
 
@@ -134,7 +134,7 @@ Dates and IDs use the system local timezone by default. Set `SOURCE_DATE_EPOCH` 
 
 | Source | Feature | How It's Integrated |
 |--------|---------|---------------------|
-| **stock** | HOT/WARM/COLD tiers | Native directory structure under `learnings/self-improving/` |
+| **stock** | HOT/WARM/COLD tiers | Native directory structure under `learning/self-improving/` |
 | **stock** | Automatic promotion (30d/90d) | Enforced by `maintain` command with `--dry-run` and `--apply`; moves stale entries (not whole files) to preserve unrelated content |
 | **stock** | Namespace isolation (projects/domains/archive) | Native directory structure |
 | **tristanmanchester** | `learnings.py` CLI | Adapted to hybrid directory layout with `--root` support |
@@ -201,13 +201,13 @@ When patterns contradict, the following precedence applies:
 
 ### From `actual-self-improvement`
 
-- Move existing `learnings/LEARNINGS.md`, `learnings/ERRORS.md`, `learnings/FEATURE_REQUESTS.md` into `learnings/self-improving/` if desired, or keep them alongside.
-- The CLI now uses `--root` before the subcommand and writes to `learnings/self-improving/` instead of `learnings/` directly.
+- Move existing `learnings/LEARNINGS.md`, `learnings/ERRORS.md`, `learnings/FEATURE_REQUESTS.md` into `learning/self-improving/` if desired, or keep them alongside.
+- The CLI now uses `--root` before the subcommand and writes to `learning/self-improving/` instead of `learnings/` directly.
 - `log-learning`, `log-error`, `log-feature`, and `log-correction` are new specific commands; the old `log` subcommand is preserved for compatibility.
 
 ### From `self-improving-compound` (original)
 
-- Data was previously at `~/self-improving/`. Now it lives at `<workspace-root>/learnings/self-improving/`.
+- Data was previously at `~/self-improving/`. Now it lives at `<workspace-root>/learning/self-improving/`.
 - The script no longer hard-codes `~/self-improving`. Use `--root` or `OPENCLAW_WORKSPACE` to set your preferred location.
 - `corrections.md` and `memory.md` formats are preserved; `index.md` is still auto-maintained.
 

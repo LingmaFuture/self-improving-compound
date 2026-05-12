@@ -6,7 +6,7 @@ Merges actual-self-improvement execution core with self-improving-compound
 HOT/WARM/COLD memory tiers.
 
 Commands:
-  init            Initialize learnings/self-improving/ structure
+  init            Initialize learning/self-improving/ structure
   status          Show HOT/WARM/COLD tier statistics
   search          Search across all learning records
   log             Backward-compatible generic log (COR/LRN/FTR/ERR)
@@ -42,7 +42,7 @@ def get_now() -> datetime:
 def resolve_root(args: argparse.Namespace) -> Optional[str]:
     return getattr(args, "local_root", None) or args.root
 
-SUBDIR_NAME = "learnings/self-improving"
+SUBDIR_NAME = "learning/self-improving"
 
 ID_PREFIXES = {
     "COR": "COR",
@@ -1178,7 +1178,7 @@ Examples:
             help="Workspace root (overrides global --root)",
         )
 
-    p_init = sub.add_parser("init", help="Initialize learnings/self-improving/ structure")
+    p_init = sub.add_parser("init", help="Initialize learning/self-improving/ structure")
     _add_root(p_init)
     p_init.set_defaults(func=cmd_init)
 

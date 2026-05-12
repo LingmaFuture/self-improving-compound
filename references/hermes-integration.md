@@ -51,7 +51,7 @@ adopt the concept without the gamification:
 Hermes has 8 pluggable memory providers. We keep a single file-based backend
 but add abstraction for portability:
 
-- Single-file backend with tiered directories (`learnings/self-improving/`)
+- Single-file backend with tiered directories (`learning/self-improving/`)
 - JSON-format export option (`--format json`) for portability between systems
 - `OPENCLAW_WORKSPACE` env var for backend location independence
 

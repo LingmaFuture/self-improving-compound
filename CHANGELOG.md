@@ -39,7 +39,7 @@ All notable changes to this project will be documented in this file.
 - `CHANGELOG.md`.
 
 ### Changed
-- `scripts/learnings.py` no longer hard-codes `~/self-improving`. All data now lives under `<root>/learnings/self-improving/`.
+- `scripts/learnings.py` no longer hard-codes `~/self-improving`. All data now lives under `<root>/learning/self-improving/`.
 - `hooks/activator.sh` and `hooks/error-detector.sh` are now workspace-root aware and use `OPENCLAW_WORKSPACE`.
 - `index.md` now includes tier statistics and Pattern-Key index.
 
