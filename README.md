@@ -10,6 +10,32 @@ An agent memory and self-improvement system built as a composite of the best pra
 
 ## Architecture
 
+## Setup
+
+
+
+After install, activate the cron audit pipeline: tell your agent "I want to install the self-improving compound cron jobs" — it will read the three job definitions from  and create the OpenClaw cron jobs via the  tool. The full setup guide is in .
+
+## Setup
+
+```bash
+clawhub install self-improving-compound
+```
+
+After install, activate the cron audit pipeline. Tell your agent:
+
+> I want to install the self-improving compound cron jobs. Use `scripts/setup-cron.json` as reference.
+
+The agent will read the three job definitions, resolve paths and delivery targets, and create the cron jobs via the `cron` tool.
+
+| Cron Job | Schedule (Asia/Shanghai) | Purpose |
+|---|---|---|
+| Light Check | every 2h, 08:00–22:00 | Scan session history for missed learnings |
+| Heavy Audit | daily 09:00 + 22:00 | System failure audit, lifecycle maintenance |
+| Daily Export | daily 00:10 | Export SQLite to Markdown for review |
+
+The full setup guide is in `scripts/setup-cron-agent.md`. Idempotent — safe to run multiple times.
+
 ## System positioning
 
 This is not just a skill — it is a **memory system**. It installs alongside your agent runtime and takes over execution learning, replacing flat markdown files with a structured pipeline:

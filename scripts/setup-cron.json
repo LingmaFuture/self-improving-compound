@@ -1,0 +1,79 @@
+{
+  "description": "Ready-to-use OpenClaw cron job definitions for the self-improving compound audit pipeline. Have your OpenClaw agent create these three jobs via the cron tool (cron add).",
+  "jobs": [
+    {
+      "name": "Self-Improving Light Check",
+      "enabled": true,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 8-22/2 * * *",
+        "tz": "Asia/Shanghai"
+      },
+      "sessionTarget": "isolated",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Run a lightweight self-improving check. Do NOT run the full learning-audit or system-failure scan.\n\nSteps:\n1. Locate the main session:\n   Use sessions_list to find the active main direct-message session. Get its sessionKey.\n\n2. Check recent conversation:\n   Use sessions_history on that sessionKey to pull the last few assistant turns.\n   Scan for: user corrections, non-obvious errors, workarounds, tool/API quirks, format mismatches, missing capabilities.\n   For each hit:\n   - Run: python3 /path/to/skills/self-improving-compound/scripts/learnings.py --root /path/to/workspace search \"<keyword>\" --limit 3\n   - If No results, log the lesson with log-correction / log-error / log-learning as appropriate.\n\n3. Quick session freshness: is the main session active? Any obvious blocker or unanswered user message?\n\n4. Reply concisely:\n   - If nothing found: \"HEARTBEAT_OK\"\n   - If something logged: one-line summary of what was logged\n   Do not paste full output or commands.",
+        "timeoutSeconds": 180,
+        "toolsAllow": [
+          "read",
+          "exec",
+          "sessions_list",
+          "sessions_history",
+          "memory_search",
+          "memory_get"
+        ]
+      },
+      "delivery": {
+        "mode": "announce",
+        "bestEffort": true
+      }
+    },
+    {
+      "name": "Learning Audit Heavy",
+      "enabled": true,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 9,22 * * *",
+        "tz": "Asia/Shanghai"
+      },
+      "sessionTarget": "isolated",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Run the heavy self-improvement audit.\n\nSteps:\n1. System failure audit:\n   /path/to/skills/self-improving-compound/scripts/log-system-failures.sh\n\n2. Check cron failures:\n   Use cron list (enabled only). For any job where lastRunStatus/lastStatus is not ok, run:\n   python3 /path/to/skills/self-improving-compound/scripts/learnings.py --root /path/to/workspace search \"<job>\" --limit 3\n   If no match, log-error with pattern cron:<job-name>.\n\n3. Learning audit:\n   python3 /path/to/skills/self-improving-compound/scripts/learning-audit.py --root /path/to/workspace --days 2 --log\n\n4. Lifecycle maintain:\n   python3 /path/to/skills/self-improving-compound/scripts/learnings.py --root /path/to/workspace maintain --apply\n\n5. Reply concisely: system status, cron failures found, audit candidates, lifecycle actions taken. Do not expose secrets or paste full logs.",
+        "timeoutSeconds": 240,
+        "toolsAllow": [
+          "exec",
+          "read",
+          "cron"
+        ]
+      },
+      "delivery": {
+        "mode": "announce",
+        "bestEffort": true
+      }
+    },
+    {
+      "name": "Daily Learning Export",
+      "enabled": true,
+      "schedule": {
+        "kind": "cron",
+        "expr": "10 0 * * *",
+        "tz": "Asia/Shanghai"
+      },
+      "sessionTarget": "isolated",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Export the self-improvement SQLite memory for review.\n\nRun:\n/path/to/skills/self-improving-compound/scripts/learning-export.sh\n\nThen reply with the export path, status count summary, and any blocker. Do not paste the full export unless asked.",
+        "timeoutSeconds": 120,
+        "toolsAllow": [
+          "exec",
+          "read"
+        ]
+      },
+      "delivery": {
+        "mode": "announce",
+        "bestEffort": true
+      }
+    }
+  ]
+}

@@ -3,7 +3,7 @@ name: self-improving-compound
 description: "Agent memory and self-improvement system. Replaces naive file-based agent memory with a structured SQLite learning engine: capture corrections, errors, and reusable lessons during active work, audit session history for missed learnings via isolated cron jobs, and promote proven rules into skills and agent instructions. 7+3 co-evolution model — memory/ (facts), learning/ (SQLite lessons), skills/ (hardened rules), AGENTS.md (behavior), TOOLS.md (env knowledge), MEMORY.md (long-term context), HEARTBEAT.md (check-ins) all improve together. Python 3.8+ CLI with bash hooks. Use for: logging non-obvious failures, user corrections, tool/API gotchas, or missing capabilities before the final reply. Use for: setting up automated cron-based audit pipelines that catch what real-time capture misses. Do not use for trivial typos or routine noise."
 compatibility: "Portable Agent Skills format. Core workflow is agent-agnostic. Bundled helpers require Python 3.8+; hook helpers require bash. No network access is required."
 metadata:
-  version: "6.1.6"
+  version: "6.1.7"
   original_slug: "self-improving-compound"
   category: "memory-system"
   author: "Hybrid adaptation from actual-self-improvement, self-improving-compound, OpenHuman memory-tree, and Hermes Agent architecture | Contact: rockwaychen@gmail.com | GitHub: LingmaFuture"
@@ -134,6 +134,26 @@ Full audit: system-failure check, cron-failure scan, `learning-audit.py --log`, 
 #### Daily Export (00:10)
 
 Run `scripts/learning-export.sh` to write `learning/memory-export.md` and `learning/status.json` for human review. Tools: `exec`, `read`. Timeout: 120s.
+
+### Cron installation (one-time setup)
+
+**The cron jobs described above are NOT created automatically when you install this skill.** You must run the setup once to create them in your OpenClaw instance.
+
+The production-grade cron job definitions are in `scripts/setup-cron.json`. The agent-facing setup guide is `scripts/setup-cron-agent.md`.
+
+Quick setup (run from your OpenClaw main session):
+
+1. **Confirm**: "I want to install the self-improving compound cron jobs. Use `scripts/setup-cron.json` as reference."
+
+2. Your agent will:
+   - Read the JSON definitions
+   - Resolve placeholder paths (skill root, workspace root)
+   - Ask or infer your delivery channel (Telegram / Feishu / etc.)
+   - Call `cron add` three times — one for each job
+
+3. **Verify**: `cron list` should show three enabled jobs with `nextRunAtMs` set.
+
+If you already have these jobs running, this step is a no-op.
 
 ### AGENTS.md capture gate
 

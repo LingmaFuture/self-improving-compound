@@ -39,7 +39,7 @@
 ## 关键特性
 
 - **SQLite 记忆引擎**：所有教训存为结构化 Chunk，支持评分、生命周期、去重、Pattern-Key 索引
-- **Cron 审计管线**：通过 OpenClaw 隔离 cron 任务实现，不污染主对话上下文
+- **Cron 审计管线**：通过 OpenClaw 隔离 cron 任务实现，不污染主对话上下文。一键安装：告诉你的 agent "I want to install the self-improving compound cron jobs"，agent 会读取 `scripts/setup-cron.json` 创建三个 cron 作业
 - **Capture Gate 输出路由**：不同类型的教训自动流向正确目标（事实→memory/，错误→learning/，规则→skills/）
 - **7+3 共演化模型**：7 个 Markdown 文件 + 3 个目录作为一个系统的不同层，任一层的改进推动其他层同步升级
 - **Python 3.8+ CLI + Bash hooks**：无需网络、无需 Node.js 运行时
@@ -47,35 +47,40 @@
 ## 快速开始
 
 ```bash
-# 1. 初始化学习存储
+# 1. 安装 skill
+clawhub install self-improving-compound
+
+# 2. 一键安装 cron 审计管线
+# 对你的 agent 说："使用 scripts/setup-cron.json 安装 cron 审计作业"
+
+# 3. 初始化学习存储
 python3 scripts/learnings.py --root /path/to/workspace init
 
-# 2. 记录一条纠正
+# 4. 记录一条纠正
 python3 scripts/learnings.py --root /path/to/workspace log-correction \
   --summary "Telegram 用了表格格式" \
   --correct "用列表，不用表格" \
   --pattern chat:telegram-format
 
-# 3. 搜索已有教训
-python3 scripts/learnings.py --root /path/to/workspace search "telegram"
-
-# 4. 每日导出
+# 5. 每日导出
 ./scripts/learning-export.sh
 ```
 
-## 安装到 OpenClaw
+## 包含的 cron 作业
 
-```bash
-clawhub install self-improving-compound
-```
+| 作业 | 频率 | 功能 |
+|------|------|------|
+| Light Check | 每 2h (08:00-22:00) | 扫描对话记录，捕获遗漏的教训 |
+| Heavy Audit | 每天 09:00 + 22:00 | 系统故障审计、学习周期维护 |
+| Daily Export | 每天 00:10 | 导出 SQLite 记忆为 Markdown 供审阅 |
 
-安装后按 [`SKILL.md`](./SKILL.md) 的「激活硬化机制」章节配置 capture gate 和 cron 审计。
+cron 作业定义在 `scripts/setup-cron.json`，安装指南在 `scripts/setup-cron-agent.md`。
 
 ## 目录结构
 
 ```
 learning/
-├── memory_tree/chunks.db    # SQLite 源码真
+├── memory_tree/chunks.db    # SQLite 源（真源）
 ├── index.md                 # 自动生成的快照
 ├── memory.md                # HOT 层（始终加载）
 ├── corrections.md           # 纠正日志

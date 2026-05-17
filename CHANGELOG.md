@@ -1,6 +1,59 @@
 # Changelog
+## 6.1.7 - 2026-05-17
+
+- Added cron installation infrastructure (scripts/setup-cron.json, scripts/setup-cron-agent.md).
+- SKILL.md now has dedicated Cron installation section with one-time setup instructions.
+- README / README_zh updated with cron setup table and quick-start instructions.
+- Closes the cron audit architecture gap where scripts existed but scheduling was undocumented.
+
+## 6.1.6 - 2026-05-17
+
+- Added author contact: rockwaychen@gmail.com / GitHub LingmaFuture.
+
+## 6.1.5 - 2026-05-17
+
+- Optimized description and SKILL.md to clearly position as an agent memory and learning system, not just a task skill.
+- Improved intro: three-layer architecture summary (real-time capture → cron audit → promotion).
+- README now includes system positioning section explaining the SQLite/cron/co-evolution pipeline.
+- Category changed from workflow to memory-system.
+
+## 6.1.4 - 2026-05-17
+
+- Synced public staging copy from ClawHub 6.1.3 series.
+- Includes full 6.1.x stack: SQLite memory-tree backend, activation hardening mechanisms, cron enforcement architecture, session-history aware audit, capture gate output routing, 7+3 co-evolution model.
+
+## 6.1.3 - 2026-05-17
+
+- Added capture gate output routing table: lessons flow to memory/learning/skills/AGENTS/TOOLS based on type.
+- Formalized the 7+3 continuous-improvement model: the full system (memory + learning + skills + AGENTS + TOOLS + MEMORY + HEARTBEAT) co-evolves; fixing one layer while leaving another stale is half-done work.
+
+## 6.1.2 - 2026-05-17
+
+- Replaced heartbeat-based audit with cron-isolated enforcement architecture: Self-Improving Light Check (2h via sessions_history), Learning Audit Heavy (2x/day), and Daily Export.
+- Documented architecture rationale: cron isolation keeps main session context clean; sessions_list + sessions_history gives cron full conversation visibility without running inside the main session.
+- Clarified heartbeat role: lightweight check-ins only; audit execution belongs in isolated cron, not in HEARTBEAT.md.
+
+
+## 6.1.1 - 2026-05-17
+
+- Added activation hardening norms: final-before-reply capture gate, heartbeat learning audit, watchdog/doctor/cron failure `log-error` routing, and daily SQLite export.
+- Added helper scripts: `learning-audit.py`, `log-system-failures.sh`, and `learning-export.sh`.
+
 
 All notable changes to this project will be documented in this file.
+
+## [6.1.0] - 2026-05-17
+
+### Changed
+- Made SQLite (`learning/memory_tree/chunks.db`) the source of truth for durable learnings.
+- Preserved human entry IDs (`TYPE-YYYYMMDD-XXX`) while keeping content-addressed chunk IDs internally.
+- Updated docs, evals, hooks, and extraction guidance to match SQLite-first behavior.
+
+### Fixed
+- Distinct same-day entries no longer dedupe incorrectly by `TYPE/date`.
+- `promote` and `edit` now operate on SQLite-backed entries instead of only scanning markdown files.
+- `maintain --apply --format json` now applies lifecycle updates before emitting JSON.
+- Hooks now route through `scripts/learnings.py` when available.
 
 ## [6.0.0] - 2026-05-12
 
@@ -39,7 +92,7 @@ All notable changes to this project will be documented in this file.
 - `CHANGELOG.md`.
 
 ### Changed
-- `scripts/learnings.py` no longer hard-codes `~/self-improving`. All data now lives under `<root>/learning/self-improving/`.
+- `scripts/learnings.py` no longer hard-codes `~/self-improving`. All data now lives under `<root>/learning/`.
 - `hooks/activator.sh` and `hooks/error-detector.sh` are now workspace-root aware and use `OPENCLAW_WORKSPACE`.
 - `index.md` now includes tier statistics and Pattern-Key index.
 
