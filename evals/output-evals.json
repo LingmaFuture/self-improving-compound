@@ -1,13 +1,13 @@
 {
-  "skill_name": "self-improvement",
+  "skill_name": "self-improving-compound",
   "evals": [
     {
       "id": 1,
       "prompt": "You were wrong earlier: the project uses pnpm workspaces, not npm. Capture that learning for future sessions.",
-      "expected_output": "A learning entry is created in `learning/self-improving/memory.md` with a deterministic ID, summary, details, and a Pattern-Key if applicable.",
+      "expected_output": "A learning entry is created in SQLite-backed `learning/memory_tree/chunks.db` with a human `LRN-YYYYMMDD-XXX` ID, summary, details, and a Pattern-Key if applicable.",
       "assertions": [
         "The workflow chooses a learning entry rather than an error or feature request",
-        "The created entry includes an LRN-YYYYMMDD-XXX identifier",
+        "The created entry includes an LRN-YYYYMMDD-XXX human identifier",
         "The entry includes Summary and Details sections",
         "The suggested action or details state a prevention rule rather than just restating the issue"
       ]
@@ -18,7 +18,7 @@
       "expected_output": "The agent searches existing learnings before logging and writes a structured error entry only if the issue is new or meaningfully distinct.",
       "assertions": [
         "The workflow searches existing learnings before creating a new entry",
-        "If a new entry is created, it is written to `learning/self-improving/memory.md`",
+        "If a new entry is created, it is stored in `learning/memory_tree/chunks.db` and visible through `search` or `export`",
         "The error entry includes Summary and Details sections",
         "The output distinguishes durable logging from routine noise"
       ]

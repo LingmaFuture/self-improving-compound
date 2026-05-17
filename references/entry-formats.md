@@ -1,21 +1,38 @@
 # Entry formats
 
-Use the bundled `scripts/learnings.py` when possible. These templates are the manual fallback.
+Use the bundled `scripts/learnings.py` when possible. Durable entries are SQLite-backed in `learning/memory_tree/chunks.db`; the markdown examples below are the export format and manual fallback.
+
+## Pattern-Key naming convention
+
+All Pattern-Keys **must use namespaced format**: `project:key` or `domain:key`.
+This prevents collisions between unrelated contexts.
+
+| ❌ Avoid | ✅ Use instead |
+|----------|---------------|
+| `migration` | `db:migration` |
+| `rate-limit` | `api:rate-limit` |
+| `layer-cache` | `docker:layer-cache` |
+| `timeout` | `network:timeout` |
+| `auth` | `api:auth-flow` or `project-alpha:auth` |
 
 ## Correction entry
 
-Written to `corrections.md` as a table row:
+Stored in SQLite. Exported markdown may look like:
 
 ```markdown
-| COR-YYYYMMDD-XXX | YYYY-MM-DD | pattern-key | What I got wrong | Correct answer | ⏳ pending |
+### COR-YYYYMMDD-XXX (YYYY-MM-DD) [Pattern-Key: db:migration]
+- **Type**: COR
+- **Summary**: What I got wrong
+- **Details**: Correct answer and context
+- **Status**: pending
 ```
 
 ## Learning entry
 
-Written to `memory.md`:
+Stored in SQLite. Exported markdown may look like:
 
 ```markdown
-### LRN-YYYYMMDD-XXX (YYYY-MM-DD) [Pattern-Key: stable.pattern.key]
+### LRN-YYYYMMDD-XXX (YYYY-MM-DD) [Pattern-Key: api:rate-limit]
 - **Type**: LRN
 - **Summary**: One-line summary of the lesson
 - **Details**: What happened, what was wrong or surprising, and what is now known to be true
@@ -23,10 +40,10 @@ Written to `memory.md`:
 
 ## Error entry
 
-Written to `memory.md`:
+Stored in SQLite. Exported markdown may look like:
 
 ```markdown
-### ERR-YYYYMMDD-XXX (YYYY-MM-DD) [Pattern-Key: error-pattern]
+### ERR-YYYYMMDD-XXX (YYYY-MM-DD) [Pattern-Key: docker:layer-cache]
 - **Type**: ERR
 - **Summary**: One-line description of the failure
 - **Details**: Command, tool, API, or environment details
@@ -34,10 +51,10 @@ Written to `memory.md`:
 
 ## Feature request entry
 
-Written to `memory.md`:
+Stored in SQLite. Exported markdown may look like:
 
 ```markdown
-### FTR-YYYYMMDD-XXX (YYYY-MM-DD) [Pattern-Key: feature-pattern]
+### FTR-YYYYMMDD-XXX (YYYY-MM-DD) [Pattern-Key: tooling:csv-export]
 - **Type**: FTR
 - **Summary**: One-line summary of the request
 - **Details**: Why the capability matters and a concrete starting point

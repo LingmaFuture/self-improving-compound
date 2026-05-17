@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# daily-memory.sh - Generate comprehensive daily memory entries
+# daily-memory.sh - Generate comprehensive daily learning entries
 #
 # Replaces the previously too-brief daily memory.md entries with
 # comprehensive, structured daily records. Integrates with the
-# self-improving compound's HOT/WARM/COLD tiered memory system.
+# learning compound's HOT/WARM/COLD tiered memory system.
 #
 # Usage:
 #   ./scripts/daily-memory.sh --root /path/to/workspace "Summary text"
@@ -23,7 +23,7 @@ print_usage() {
     cat << 'USAGE'
 Usage: daily-memory.sh [--root PATH] [--append] [SUMMARY]
 
-Generate a comprehensive daily memory entry at memory/YYYY-MM-DD.md
+Generate a comprehensive daily memory entry at learning/daily/YYYY-MM-DD.md
 in the workspace root. Outputs to both the file and stdout.
 
 Options:
@@ -114,7 +114,7 @@ fi
 # ---------------------------------------------------------------------------
 # Prepare paths and timestamps
 # ---------------------------------------------------------------------------
-MEMORY_DIR="$ROOT/memory"
+MEMORY_DIR="$ROOT/learning/daily"
 mkdir -p "$MEMORY_DIR"
 
 TODAY="$(date +%Y-%m-%d)"
@@ -134,7 +134,7 @@ elif command -v python3 &>/dev/null; then
     for candidate in \
         "$ROOT/scripts/learnings.py" \
         "$ROOT/../scripts/learnings.py" \
-        "$HOME/self-improving/scripts/learnings.py"; do
+        "$HOME/.openclaw/projects/research/clawhub-self-improving-compound-20260516-162124/skills/self-improving-compound/scripts/learnings.py"; do
         if [ -x "$candidate" ]; then
             LEARNINGS_CLI="$candidate"
             break
@@ -214,7 +214,7 @@ SECTION_SEPARATOR
 - [ ] [Item 3 — context and priority]
 
 ## Self-Improvement Audit
-- [ ] Did I capture all non-obvious failures to \`learning/self-improving/\`?
+- [ ] Did I capture all non-obvious failures to \`learning/\`?
 - [ ] Did any Pattern-Key reach Recurrence-Count >= 3?
 - [ ] Did I promote any learnings to project or domain memory?
 - [ ] Did I identify any new reusable skills?
@@ -251,8 +251,8 @@ if [ -n "$LEARNINGS_CLI" ]; then
     cat >&2 << HINT
 
 [daily-memory] Tip: Review the entry above and log durable lessons with:
-  python3 $LEARNINGS_CLI --root "$ROOT" log-learning "Your lesson summary"
-  python3 $LEARNINGS_CLI --root "$ROOT" log-correction "What was corrected"
+  python3 $LEARNINGS_CLI --root "$ROOT" log-learning --summary "Your lesson summary" --details "Why it matters" --pattern "domain:key"
+  python3 $LEARNINGS_CLI --root "$ROOT" log-correction --summary "What was wrong" --correct "What is correct" --pattern "domain:key"
 
 HINT
 fi

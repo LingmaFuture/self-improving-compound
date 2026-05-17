@@ -17,12 +17,12 @@ Add this to your workspace `HEARTBEAT.md` or equivalent recurring-check file:
 - If the report shows only healthy entries or minor recommendations, return `HEARTBEAT_OK`
 - If the report shows clearly safe moves (e.g., stale HOT entries with unambiguous WARM targets), you may run `maintain --apply` automatically
 - If the report shows ambiguous conflicts, promotion candidates, or missing metadata, log a recommendation and ask the user instead of applying
-- Update `learning/self-improving/heartbeat-state.md` with the last run timestamp and result
+- `maintain` updates `learning/heartbeat-state.md` with the last run timestamp and result
 ```
 
 ## State file template
 
-Create `learning/self-improving/heartbeat-state.md` to track heartbeat activity:
+Create `learning/heartbeat-state.md` to track heartbeat activity:
 
 ```markdown
 # Self-Improving Heartbeat State
@@ -39,7 +39,7 @@ last_heartbeat_result: never
 
 1. **Prefer `maintain --dry-run`** in automated contexts.
 2. **Only auto-apply** when:
-   - The move is unambiguous (e.g., a HOT entry with `Last-Seen` 60 days ago and a clear domain).
+   - The lifecycle update is unambiguous (e.g., an `admitted` entry with `Last-Seen` 60 days ago).
    - No promotion candidates are flagged.
    - No conflicts are detected.
 3. **Never auto-apply** when:
@@ -47,7 +47,7 @@ last_heartbeat_result: never
    - A conflict is detected between namespaces.
    - A promotion candidate has `Recurrence-Count >= 3` (ask user first).
    - The target namespace is unclear.
-4. **Preserve source transparency**: after any move, the original entry should retain a pointer (e.g., `Moved-To:` or `Status: archived`) so future readers can trace the history.
+4. **Preserve source transparency**: after any promotion/export, the SQLite entry should retain `Status` and `Promoted-To` metadata so future readers can trace the history.
 
 ## Minimal example
 
@@ -69,4 +69,4 @@ fi
 
 ## Integration with OpenClaw
 
-If your workspace uses an OpenClaw `HEARTBEAT.md`, add the snippet above under a `## Self-Improving Memory Check` heading. The skill will then participate in the existing heartbeat flow without adding new files outside `learning/self-improving/`.
+If your workspace uses an OpenClaw `HEARTBEAT.md`, add the snippet above under a `## Self-Improving Memory Check` heading. The skill will then participate in the existing heartbeat flow without adding new files outside `learning/`.

@@ -22,7 +22,7 @@ Example prompt-start reminder:
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/self-improvement/hooks/activator.sh"
+            "command": "/absolute/path/to/self-improving-compound/hooks/activator.sh"
           }
         ]
       }
@@ -42,7 +42,7 @@ Example error reminder:
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/self-improvement/hooks/error-detector.sh"
+            "command": "/absolute/path/to/self-improving-compound/hooks/error-detector.sh"
           }
         ]
       }
@@ -61,12 +61,12 @@ When hooks are unavailable, add a compact reminder to `.github/copilot-instructi
 
 ```markdown
 ## Self-improvement
-After solving non-obvious issues or learning project-specific conventions, consider logging the durable lesson to `learning/self-improving/` and promoting proven rules into shared memory.
+After solving non-obvious issues or learning project-specific conventions, consider logging the durable lesson to `learning/` and promoting proven rules into shared memory.
 ```
 
 ## OpenClaw
 
 OpenClaw-specific notes:
 - Set `OPENCLAW_WORKSPACE` so `--root` is optional.
-- Keep `learning/self-improving/` in the workspace root, not the skill directory.
+- Keep `learning/` in the workspace root, not the skill directory.
 - The `hooks/activator.sh` and `hooks/error-detector.sh` scripts are workspace-root aware.

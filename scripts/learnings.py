@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
 """
-learnings.py - Self-Improving Learning Log (Hybrid)
+learnings.py - Self-Improving Learning Log (SQLite-backed)
 
-Merges actual-self-improvement execution core with self-improving-compound
-HOT/WARM/COLD memory tiers.
+Powered by OpenHuman's memory architecture port (scripts/memory/).
+All entries are stored as structured Chunks in SQLite with:
+  - Deterministic content-addressed IDs (SHA256)
+  - Scoring (token signal, metadata weight, source weight)
+  - Entity indexing (Pattern-Keys → fast lookup)
+  - Entity hotness tracking (frequency × recency)
+  - Async job queue for background processing
+  - Idempotent ingest deduplication
 
 Commands:
-  init            Initialize learning/self-improving/ structure
-  status          Show HOT/WARM/COLD tier statistics
+  init            Initialize learning/ structure + SQLite DB
+  status          Show memory statistics across all 9 tables
   search          Search across all learning records
   log             Backward-compatible generic log (COR/LRN/FTR/ERR)
-  log-correction  Log a correction to corrections.md
-  log-learning    Log a learning to memory.md
-  log-error       Log an error to memory.md
-  log-feature     Log a feature request to memory.md
+  log-correction  Log a correction
+  log-learning    Log a learning
+  log-error       Log an error
+  log-feature     Log a feature request
   maintain        Review and maintain memory lifecycle
+  edit            Edit entry metadata
+  promote         Promote entry to a target memory file
+  forget          Forget an entry
+  validate        Validate data integrity
+  export          Export entries as markdown
 
 Global options:
   --root PATH     Workspace root (default: OPENCLAW_WORKSPACE env, else cwd)
@@ -23,13 +34,29 @@ Global options:
 from __future__ import annotations
 
 import argparse
-import difflib
+import datetime
+import hashlib
+import json
 import os
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# OpenHuman memory architecture port
+from memory.store import (
+    CHUNK_STATUS_ADMITTED,
+    CHUNK_STATUS_DROPPED,
+    CHUNK_STATUS_PENDING_EXTRACTION,
+    CHUNK_STATUS_BUFFERED,
+    CHUNK_STATUS_SEALED,
+    ListChunksQuery,
+    MemoryStore,
+)
+from memory.types import Chunk, Metadata, SourceKind, chunk_id, approx_token_count
+from memory.chunker import ChunkerInput, ChunkerOptions, chunk_markdown
+from memory.ingest import ingest_markdown, IngestResult
 
 
 def get_now() -> datetime:
@@ -42,7 +69,7 @@ def get_now() -> datetime:
 def resolve_root(args: argparse.Namespace) -> Optional[str]:
     return getattr(args, "local_root", None) or args.root
 
-SUBDIR_NAME = "learning/self-improving"
+SUBDIR_NAME = "learning"
 
 ID_PREFIXES = {
     "COR": "COR",
@@ -110,241 +137,599 @@ def ensure_structure(base_dir: Path) -> None:
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
 
-    memory_file = base_dir / "memory.md"
-    if not memory_file.exists():
-        memory_file.write_text(
-            "# Memory (HOT Tier)\n\n"
-            "## ID Rules\n"
-            "- All entries use format: `TYPE-YYYYMMDD-XXX` (e.g., COR-20230101-001)\n"
-            "- Types: COR (correction), LRN (learning), FTR (feature), ERR (error)\n\n"
-            "## Pattern-Key Rules\n"
-            "- Recurring issues get a stable Pattern-Key (e.g., `markdown-table-telegram`)\n"
-            "- Link related entries with `See Also: [Pattern-Key]`\n"
-            "- Bump priority when Recurrence-Count >= 3 + spans 2+ tasks + within 30 days\n\n"
-            "## Promotion Thresholds\n"
-            "- HOT -> WARM: 30 days unused\n"
-            "- WARM -> COLD: 90 days unused\n"
-            "- WARM -> HOT: 3 uses within 7 days\n"
-            "- To AGENTS.md/SOUL.md/TOOLS.md: proven + broadly applicable\n\n"
-            "## Preferences\n"
-            "<!-- Add your personal preferences here -->\n\n"
-            "## Patterns\n"
-            "<!-- Add recurring patterns here -->\n\n"
-            "## Memory Hygiene\n"
-            "- Action-verified only: log facts you have executed and verified, not assumptions.\n"
-            "- No volatile state: avoid timestamps, session IDs, PIDs, temp paths, or 'current' values.\n"
-            "- Pointers, not duplicates: index entries and cross-references should locate details, not repeat them.\n"
-            "- Preserve facts on cleanup: compress or move entries, but keep the verified 'what works' intact.\n"
-            "## Rules\n"
-            "- Self-improving skill mode: Passive.\n"
-            f"- Use `python3 scripts/learnings.py --root <workspace>` for logging/search/status.\n"
-            "- Search before log to avoid duplicates.\n"
-            "- Never log secrets, tokens, or private data.\n",
-            encoding="utf-8",
-        )
-
-    corrections_file = base_dir / "corrections.md"
-    if not corrections_file.exists():
-        corrections_file.write_text(
-            "# Corrections Log\n\n"
-            "| ID | Date | Pattern-Key | What I Got Wrong | Correct Answer | Status |\n"
-            "|------|------|-------------|------------------|----------------|--------|\n",
-            encoding="utf-8",
-        )
-
-    index_file = base_dir / "index.md"
-    if not index_file.exists():
-        index_file.write_text(
-            "# Memory Index\n\n"
-            "| File | Lines | Last Updated |\n"
-            "|------|-------|--------------|\n",
-            encoding="utf-8",
-        )
-
-
-def count_lines(path: Path) -> int:
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            return len(f.readlines())
-    return 0
-
-
-def generate_id(prefix: str, base_dir: Path) -> str:
-    today = get_now().strftime("%Y%m%d")
-    pattern = re.compile(rf"(?:^|\s){prefix}-{today}-(\d{{3}})\b")
-    max_seq = 0
-    search_files = [
-        base_dir / "memory.md",
-        base_dir / "corrections.md",
-    ]
-    for f in search_files:
-        if f.exists():
-            text = f.read_text(encoding="utf-8")
-            for m in pattern.finditer(text):
-                max_seq = max(max_seq, int(m.group(1)))
-    for subdir in ["projects", "domains", "archive"]:
-        for f in (base_dir / subdir).rglob("*.md"):
-            if f.exists():
-                text = f.read_text(encoding="utf-8")
-                for m in pattern.finditer(text):
-                    max_seq = max(max_seq, int(m.group(1)))
-    seq = max_seq + 1
-    return f"{prefix}-{today}-{seq:03d}"
-
 
 def extract_pattern_keys(base_dir: Path) -> List[str]:
+    """Extract unique Pattern-Keys from SQLite. Legacy markdown file scanning removed."""
     keys: List[str] = []
-    pattern = re.compile(r"Pattern-Key:\s*([^\]\n|]+)")
-    for f in [base_dir / "memory.md", base_dir / "corrections.md"]:
-        if f.exists():
-            text = f.read_text(encoding="utf-8")
-            keys.extend(k.strip() for k in pattern.findall(text) if k.strip())
-    return keys
+    db_path = base_dir / DB_SUBDIR / DB_FILE
+    if db_path.exists():
+        try:
+            with MemoryStore(str(db_path)) as store:
+                for c in store.list_chunks(ListChunksQuery(limit=10000)):
+                    for tag in c.metadata.tags:
+                        if tag.startswith("pattern-key:"):
+                            keys.append(tag.split(":", 1)[1])
+        except Exception:
+            pass
+    return list(sorted(set(keys)))
 
 
 def update_index(base_dir: Path) -> None:
+    """Generate index.md as a read-only snapshot of SQLite state."""
     today = get_now().strftime("%Y-%m-%d")
-    lines = [
-        "# Memory Index\n",
-        "",
-        "| File | Lines | Last Updated |",
-        "|------|-------|--------------|",
-    ]
-    for f in ["memory.md", "corrections.md", "index.md"]:
-        path = base_dir / f
-        lines.append(f"| {f} | {count_lines(path)} | {today} |")
 
-    warm_count = sum(
-        1 for _ in (base_dir / "projects").rglob("*.md")
-    ) + sum(1 for _ in (base_dir / "domains").rglob("*.md"))
-    cold_count = sum(1 for _ in (base_dir / "archive").rglob("*.md"))
+    # Aggregate from SQLite
+    type_counts: Dict[str, int] = {}
+    lifecycle_counts: Dict[str, int] = {}
+    total = 0
+
+    db_path = base_dir / DB_SUBDIR / DB_FILE
+    if db_path.exists():
+        try:
+            with MemoryStore(str(db_path)) as store:
+                for c in store.list_chunks(ListChunksQuery(limit=10000)):
+                    total += 1
+                    for tag in c.metadata.tags:
+                        if tag in ("LRN", "ERR", "COR", "FTR"):
+                            type_counts[tag] = type_counts.get(tag, 0) + 1
+                    lc = store.get_chunk_lifecycle(c.id) or "admitted"
+                    lifecycle_counts[lc] = lifecycle_counts.get(lc, 0) + 1
+        except Exception:
+            pass
+
+    lines: List[str] = [
+        "# Memory Index",
+        "",
+        "**Source of truth**: `memory_tree/chunks.db` (SQLite)",
+        "",
+        f"Generated: {today}",
+        "",
+    ]
+
+    if total == 0:
+        lines.append("_No entries yet. Use `learnings.py init` to get started._")
+        lines.append("")
+        (base_dir / "index.md").write_text("\n".join(lines), encoding="utf-8")
+        return
 
     lines.extend([
+        "## Entries",
         "",
-        "## Tiers",
+        f"Total: {total}",
         "",
-        f"- HOT: memory.md, corrections.md",
-        f"- WARM: {warm_count} files in projects/ + domains/",
-        f"- COLD: {cold_count} files in archive/",
-        "",
-        "## Pattern-Key Index",
-        "",
+        "| Type | Count |",
+        "|------|-------|",
     ])
+    for t in ("COR", "LRN", "ERR", "FTR"):
+        lines.append(f"| {t} | {type_counts.get(t, 0)} |")
+
+    if lifecycle_counts:
+        lines.extend([
+            "",
+            "## Lifecycle",
+            "",
+            "| Tier | Count |",
+            "|------|-------|",
+        ])
+        for lc in ("admitted", "buffered", "sealed", "dropped"):
+            count = lifecycle_counts.get(lc, 0)
+            if count:
+                tier_label = {"admitted": "HOT", "buffered": "WARM", "sealed": "COLD", "dropped": "DROPPED"}.get(lc, lc)
+                lines.append(f"| {tier_label} ({lc}) | {count} |")
 
     pattern_keys = extract_pattern_keys(base_dir)
     if pattern_keys:
-        for pk in sorted(set(pattern_keys)):
+        lines.extend([
+            "",
+            "## Pattern-Keys",
+            "",
+        ])
+        for pk in pattern_keys:
             lines.append(f"- `{pk}`")
-    else:
-        lines.append("_No Pattern-Keys indexed yet._")
 
-    lines.append("")
+    lines.extend([
+        "",
+        "---",
+        "",
+        "_This index is auto-generated. Use `learnings.py` CLI to query and manage entries._",
+        "",
+    ])
 
     (base_dir / "index.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-def search_content(base_dir: Path, query: str, limit: int = 20) -> List[Dict[str, Any]]:
-    results: List[Dict[str, Any]] = []
-    query_lower = query.lower()
+# ---------------------------------------------------------------------------
+# New helpers: store, ingestion, scoring, entity indexing
+# ---------------------------------------------------------------------------
 
-    search_paths = [
-        base_dir / "memory.md",
-        base_dir / "corrections.md",
-    ]
-    for subdir in ["projects", "domains", "archive"]:
-        search_paths.extend((base_dir / subdir).rglob("*.md"))
+DB_SUBDIR = Path("memory_tree")
+DB_FILE = "chunks.db"
 
-    for path in search_paths:
-        if not path.exists():
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                file_lines = f.readlines()
-                for i, line in enumerate(file_lines, 1):
-                    if query_lower in line.lower():
-                        rel = path.relative_to(base_dir.parent) if path.is_relative_to(base_dir.parent) else path.name
-                        results.append({
-                            "file": str(rel),
-                            "line": i,
-                            "snippet": line.strip(),
-                        })
-                        if len(results) >= limit:
-                            return results
-        except Exception:
-            continue
-    return results
+
+def get_store(args_root: Optional[str]) -> MemoryStore:
+    """Open the SQLite MemoryStore for the workspace root.
+
+    DB lives at ``<base_dir>/memory_tree/chunks.db``, matching the
+    OpenHuman convention.  Schema is applied lazily on first access.
+    """
+    base_dir = get_base_dir(args_root)
+    db_path = base_dir / DB_SUBDIR / DB_FILE
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return MemoryStore(str(db_path))
+
+
+def _entry_fingerprint(
+    entry_type: str,
+    summary: str,
+    details: str,
+    pattern_key: str,
+    area: str,
+) -> str:
+    normalized = "\0".join(
+        [
+            entry_type.strip().upper(),
+            re.sub(r"\s+", " ", summary.strip().lower()),
+            re.sub(r"\s+", " ", details.strip().lower()),
+            pattern_key.strip().lower(),
+            area.strip().lower(),
+        ]
+    )
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _extract_entry_id(chunk: Chunk) -> str:
+    for tag in chunk.metadata.tags:
+        if tag.startswith("entry-id:"):
+            return tag.split(":", 1)[1]
+    m = re.search(r"^###\s+([A-Z]{3}-\d{8}-\d{3})\b", chunk.content, re.MULTILINE)
+    return m.group(1) if m else chunk.id[:12]
+
+
+def _extract_status(chunk: Chunk) -> str:
+    for tag in chunk.metadata.tags:
+        if tag.startswith("status:"):
+            return tag.split(":", 1)[1]
+    m = re.search(r"- \*\*Status\*\*:\s*(.+)", chunk.content)
+    return m.group(1).strip() if m else "pending"
+
+
+def _extract_recurrence_count(chunk: Chunk) -> int:
+    m = re.search(r"- \*\*Recurrence-Count\*\*:\s*(\d+)", chunk.content)
+    if not m:
+        return 1
+    try:
+        return max(1, int(m.group(1)))
+    except ValueError:
+        return 1
+
+
+def _extract_last_seen(chunk: Chunk) -> datetime:
+    m = re.search(r"- \*\*Last-Seen\*\*:\s*([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{8})", chunk.content)
+    if m:
+        parsed = _parse_date(m.group(1))
+        if parsed:
+            return parsed
+    return chunk.metadata.timestamp
+
+
+def _extract_field_value(chunk: Chunk, field: str, default: str = "") -> str:
+    m = re.search(rf"- \*\*{re.escape(field)}\*\*:\s*(.+)", chunk.content)
+    return m.group(1).strip() if m else default
+
+
+def _replace_or_append_field(content: str, field: str, value: str) -> str:
+    pattern = rf"- \*\*{re.escape(field)}\*\*:\s*.*"
+    replacement = f"- **{field}**: {value}"
+    if re.search(pattern, content):
+        return re.sub(pattern, replacement, content)
+    return content.rstrip() + f"\n{replacement}\n"
+
+
+def _next_entry_id(store: MemoryStore, entry_type: str, now: datetime) -> str:
+    date_part = now.strftime("%Y%m%d")
+    prefix = f"{entry_type}-{date_part}-"
+    max_seq = 0
+    for chunk in store.list_chunks(ListChunksQuery(limit=10000)):
+        entry_id = _extract_entry_id(chunk)
+        if entry_id.startswith(prefix):
+            try:
+                max_seq = max(max_seq, int(entry_id.rsplit("-", 1)[1]))
+            except (IndexError, ValueError):
+                continue
+    return f"{prefix}{max_seq + 1:03d}"
+
+
+def _find_chunk_by_entry_id(store: MemoryStore, entry_id: str) -> Optional[Chunk]:
+    wanted = entry_id.strip()
+    for chunk in store.list_chunks(ListChunksQuery(limit=10000)):
+        if chunk.id == wanted or chunk.id.startswith(wanted) or _extract_entry_id(chunk) == wanted:
+            return chunk
+    return None
+
+
+def _chunk_for_entry(
+    entry_type: str,
+    entry_id_str: str,
+    summary: str,
+    details: str,
+    pattern_key: str,
+    area: str,
+    fingerprint: str,
+    now: datetime,
+    owner: str = "user",
+) -> Chunk:
+    """Build a Chunk from structured log entry fields.
+
+    The chunk content is the canonical markdown representation, same as
+    the legacy format but stored in SQLite instead of .md files.
+    """
+    today_str = now.strftime("%Y-%m-%d")
+    source_id = entry_id_str
+
+    markdown = (
+        f"### {entry_id_str} ({today_str})"
+        + (f" [Pattern-Key: {pattern_key}]" if pattern_key else "")
+        + f"\n- **Type**: {entry_type}"
+        + f"\n- **Summary**: {summary}"
+        + (f"\n- **Details**: {details}" if details else "")
+        + (f"\n- **Area**: {area}" if area else "")
+        + f"\n- **First-Seen**: {today_str}"
+        + f"\n- **Last-Seen**: {today_str}"
+        + f"\n- **Recurrence-Count**: 1"
+        + f"\n- **Status**: pending"
+        + f"\n- **Storage**: sqlite"
+        + "\n"
+    )
+
+    tags = [entry_type, f"entry-id:{entry_id_str}", f"fingerprint:{fingerprint}", "status:pending"]
+    if pattern_key:
+        tags.append(f"pattern-key:{pattern_key}")
+    if area:
+        tags.append(f"area:{area}")
+
+    meta = Metadata(
+        source_kind=SourceKind.DOCUMENT,
+        source_id=source_id,
+        owner=owner,
+        timestamp=now,
+        time_range=(now, now),
+        tags=tags,
+        source_ref=None,
+    )
+    cid = chunk_id(SourceKind.DOCUMENT, source_id, 0, markdown)
+    return Chunk(
+        id=cid,
+        content=markdown,
+        metadata=meta,
+        token_count=approx_token_count(markdown),
+        seq_in_source=0,
+        created_at=now,
+    )
+
+
+def _compute_entry_score(chunk: Chunk) -> MemoryStore.ScoreRow:
+    """Compute a basic signal score for a log entry chunk.
+
+    Scores mimic OpenHuman's admission gate:
+      - token_count_signal: penalises very short (<50) or very long (>5000) entries
+      - unique_words_signal: lexical diversity
+      - metadata_weight: higher if tags/pattern-key present
+      - source_weight: higher if summary is non-trivial
+      - entity_density: pattern-key presence
+      - total: weighted combination
+    """
+    content = chunk.content
+    words = content.split()
+    unique_words = len(set(w.lower() for w in words))
+    word_count = max(1, len(words))
+    char_count = max(1, len(content))
+
+    # Token count signal: sigmoid-like, peaks at ~200-2000 chars
+    tc_signal = min(1.0, char_count / 2000.0) * (1.0 if char_count >= 50 else 0.3)
+
+    # Unique words signal: lexical diversity
+    uw_signal = min(1.0, unique_words / max(1, word_count) * 2.0)
+
+    # Metadata weight: pattern-key → useful signal
+    has_pk = any("pattern-key" in t for t in chunk.metadata.tags)
+    has_area = any("area" in t for t in chunk.metadata.tags)
+    meta_weight = 0.3 + (0.4 if has_pk else 0.0) + (0.3 if has_area else 0.0)
+
+    # Source weight: entry type signals usefulness
+    entry_types = [t for t in chunk.metadata.tags if t in ("LRN", "ERR", "COR", "FTR")]
+    type_bonus = {"COR": 1.0, "ERR": 0.9, "LRN": 0.8, "FTR": 0.6}
+    src_weight = max(type_bonus.get(t, 0.5) for t in entry_types) if entry_types else 0.5
+
+    # Interaction weight tracks explicit reuse. New entries start at zero so
+    # maintenance does not confuse freshness with recurrence.
+    interaction_weight = 0.0
+
+    # Entity density: pattern-key length ratio
+    pk_chars = 0
+    if has_pk:
+        for tag in chunk.metadata.tags:
+            if tag.startswith("pattern-key:"):
+                pk_chars = len(tag)
+    entity_density = min(1.0, pk_chars / 200.0) if has_pk else 0.0
+
+    total = (
+        tc_signal * 0.20
+        + uw_signal * 0.15
+        + meta_weight * 0.20
+        + src_weight * 0.25
+        + interaction_weight * 0.10
+        + entity_density * 0.10
+    )
+    total = max(0.0, min(1.0, total))
+
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    return MemoryStore.ScoreRow(
+        chunk_id=chunk.id,
+        total=total,
+        token_count_signal=tc_signal,
+        unique_words_signal=uw_signal,
+        metadata_weight=meta_weight,
+        source_weight=src_weight,
+        interaction_weight=interaction_weight,
+        entity_density=entity_density,
+        dropped=0,
+        computed_at_ms=now_ms,
+    )
+
+
+def _index_pattern_key(store: MemoryStore, chunk: Chunk, pattern_key: str) -> None:
+    """Index a Pattern-Key in the entity index for fast lookup."""
+    if not pattern_key:
+        return
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    store.upsert_entity_index([
+        MemoryStore.EntityIndexRow(
+            entity_id=f"pattern-key:{pattern_key}",
+            node_id=chunk.id,
+            node_kind="chunk",
+            entity_kind="pattern_key",
+            surface=pattern_key,
+            score=1.0,
+            timestamp_ms=now_ms,
+        ),
+    ])
+
+
+def _update_hotness(store: MemoryStore, chunk: Chunk, pattern_key: str) -> None:
+    """Update entity hotness for pattern-key usage."""
+    if not pattern_key:
+        return
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    entity_id = f"pattern-key:{pattern_key}"
+    # Fetch existing hotness or compute fresh
+    existing = store.top_entities(limit=1000)
+    found = [e for e in existing if e.get("entity_id") == entity_id]
+    if found:
+        freq = float(found[0]["frequency"]) + 1.0
+        score = float(found[0]["score"])
+        # Decayed score: new_score = old * 0.9 + 0.1
+        score = score * 0.9 + 1.0
+    else:
+        freq = 1.0
+        score = 1.0
+    store.upsert_entity_hotness(
+        entity_id=entity_id,
+        tree_id="default",
+        frequency=freq,
+        recency=1.0,
+        score=score,
+        last_seen_ms=now_ms,
+    )
+
+
+def _ingest_entry(
+    store: MemoryStore,
+    entry_type: str,
+    summary: str,
+    details: str,
+    pattern_key: str,
+    area: str,
+    *,
+    force: bool = False,
+) -> Optional[str]:
+    """Core ingestion pipeline for a structured log entry.
+
+    1. Build a Chunk from the entry fields
+    2. Check dedup (unless --force)
+    3. Compute score
+    4. Persist chunk + score atomically
+    5. Index pattern-key in entity_index
+    6. Update entity hotness
+    7. Enqueue background job for extraction
+
+    Returns the human entry ID or None if dedup'd.
+    """
+    now = get_now()
+    fingerprint = _entry_fingerprint(entry_type, summary, details, pattern_key, area)
+
+    if not force:
+        fingerprint_tag = f"fingerprint:{fingerprint}"
+        for existing in store.list_chunks(ListChunksQuery(limit=10000)):
+            if fingerprint_tag in existing.metadata.tags:
+                return None
+
+    entry_id = _next_entry_id(store, entry_type, now)
+    chunk = _chunk_for_entry(entry_type, entry_id, summary, details, pattern_key, area, fingerprint, now)
+    source_kind = chunk.metadata.source_kind
+    source_id = chunk.metadata.source_id
+
+    # Persist chunk
+    store.claim_source_ingest(source_kind, source_id, chunk_count=1)
+    store.upsert_chunks([chunk])
+
+    # Compute and persist score
+    score = _compute_entry_score(chunk)
+    store.upsert_scores([score])
+
+    # Mark lifecycle
+    store.set_chunk_lifecycle(chunk.id, CHUNK_STATUS_ADMITTED)
+
+    # Entity indexing
+    if pattern_key:
+        _index_pattern_key(store, chunk, pattern_key)
+        _update_hotness(store, chunk, pattern_key)
+
+    # Track area as entity too
+    if area:
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        store.upsert_entity_index([
+            MemoryStore.EntityIndexRow(
+                entity_id=f"area:{area}",
+                node_id=chunk.id,
+                node_kind="chunk",
+                entity_kind="area",
+                surface=area,
+                score=0.5,
+                timestamp_ms=now_ms,
+            ),
+        ])
+
+    return entry_id
+
+
+def _render_chunk_as_markdown(chunk: Chunk) -> str:
+    """Render a Chunk back to human-readable markdown."""
+    ts = chunk.metadata.timestamp.strftime("%Y-%m-%d")
+    entry_type = chunk.metadata.tags[0] if chunk.metadata.tags else "LRN"
+    pk_tag = [t for t in chunk.metadata.tags if t.startswith("pattern-key:")]
+    pk = pk_tag[0].split(":", 1)[1] if pk_tag else ""
+    area_tag = [t for t in chunk.metadata.tags if t.startswith("area:")]
+    area = area_tag[0].split(":", 1)[1] if area_tag else ""
+
+    lines = [f"### {_extract_entry_id(chunk)} ({ts})"]
+    if pk:
+        lines[0] += f" [Pattern-Key: {pk}]"
+    lines.append(f"- **Type**: {entry_type}")
+    summary_match = re.search(r"\*\*Summary\*\*:\s*(.+)", chunk.content)
+    if summary_match:
+        lines.append(f"- **Summary**: {summary_match.group(1)}")
+    details_match = re.search(r"\*\*Details\*\*:\s*(.+?)(?=\n- \*\*|\Z)", chunk.content, re.DOTALL)
+    if details_match:
+        lines.append(f"- **Details**: {details_match.group(1).strip()}")
+    if area:
+        lines.append(f"- **Area**: {area}")
+    lines.append(f"- **First-Seen**: {_extract_field_value(chunk, 'First-Seen', ts)}")
+    lines.append(f"- **Last-Seen**: {_extract_field_value(chunk, 'Last-Seen', ts)}")
+    lines.append(f"- **Recurrence-Count**: {_extract_recurrence_count(chunk)}")
+    lines.append(f"- **Status**: {_extract_status(chunk)}")
+    promoted_match = re.search(r"- \*\*Promoted-To\*\*:\s*(.+)", chunk.content)
+    if promoted_match:
+        lines.append(f"- **Promoted-To**: {promoted_match.group(1).strip()}")
+    lines.append(f"- **Token-Count**: {chunk.token_count}")
+    lines.append(f"- **Chunk-ID**: `{chunk.id}`")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def cmd_init(args: argparse.Namespace) -> None:
     base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
-    print(f"[init] Self-improving structure ready at: {base_dir}")
-    print(f"[init] HOT  : memory.md, corrections.md")
-    print(f"[init] WARM : projects/, domains/")
-    print(f"[init] COLD : archive/")
+    # Initialise the SQLite store
+    store = get_store(resolve_root(args))
+    store.open()
+    store.close()
+    print(f"[init] Learning structure ready at: {base_dir}")
+    print(f"[init] MemoryStore : {base_dir / DB_SUBDIR / DB_FILE}")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
     base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
 
-    hot_lines = count_lines(base_dir / "memory.md")
-    corrections_lines = count_lines(base_dir / "corrections.md")
-    warm_count = sum(
-        1 for _ in (base_dir / "projects").rglob("*.md")
-    ) + sum(1 for _ in (base_dir / "domains").rglob("*.md"))
-    cold_count = sum(1 for _ in (base_dir / "archive").rglob("*.md"))
-
-    seen_ids: set[str] = set()
-    pattern_counts: Dict[str, int] = {}
-
-    memory_text = (base_dir / "memory.md").read_text(encoding="utf-8") if (base_dir / "memory.md").exists() else ""
-    for m in re.finditer(r"^### (\w+)-(\d{8}-\d{3})", memory_text, re.MULTILINE):
-        prefix = m.group(1)
-        entry_id = f"{prefix}-{m.group(2)}"
-        if entry_id not in seen_ids:
-            seen_ids.add(entry_id)
-            pattern_counts[prefix] = pattern_counts.get(prefix, 0) + 1
-
-    corrections_text = (base_dir / "corrections.md").read_text(encoding="utf-8") if (base_dir / "corrections.md").exists() else ""
-    for m in re.finditer(r"\|\s*([A-Z]{3}-\d{8}-\d{3})\s*\|", corrections_text):
-        entry_id = m.group(1)
-        if entry_id not in seen_ids:
-            seen_ids.add(entry_id)
-            prefix = entry_id.split("-")[0]
-            pattern_counts[prefix] = pattern_counts.get(prefix, 0) + 1
-
-    pkeys = extract_pattern_keys(base_dir)
-
     fmt = getattr(args, "format", "text") or "text"
+    store = get_store(resolve_root(args))
+    with store:
+        # Stats from all 9 tables
+        total_chunks = store.count_chunks()
+
+        # Entry type breakdown from tags
+        all_chunks = store.list_chunks(ListChunksQuery(limit=10000))
+        type_counts: Dict[str, int] = {}
+        pk_count = 0
+        area_counts: Dict[str, int] = {}
+        lifecycle_counts: Dict[str, int] = {}
+        total_score = 0.0
+        scored_count = 0
+
+        for c in all_chunks:
+            for tag in c.metadata.tags:
+                if tag in ("LRN", "ERR", "COR", "FTR"):
+                    type_counts[tag] = type_counts.get(tag, 0) + 1
+                elif tag.startswith("pattern-key:"):
+                    pk_count += 1
+                elif tag.startswith("area:"):
+                    area_name = tag.split(":", 1)[1]
+                    area_counts[area_name] = area_counts.get(area_name, 0) + 1
+
+            # Lifecycle
+            lc = store.get_chunk_lifecycle(c.id)
+            lc = lc or "admitted"
+            lifecycle_counts[lc] = lifecycle_counts.get(lc, 0) + 1
+
+            # Score
+            sc = store.get_score(c.id)
+            if sc:
+                total_score += sc.total
+                scored_count += 1
+
+        avg_score = total_score / max(1, scored_count)
+
+        # Entity index stats
+        idx_rows = store.query_entity_index(limit=10000)
+        entity_type_counts: Dict[str, int] = {}
+        for r in idx_rows:
+            entity_type_counts[r.entity_kind] = entity_type_counts.get(r.entity_kind, 0) + 1
+
+        # Entity hotness
+        top_entities = store.top_entities(limit=5)
+
+        # Job queue: status must remain read-only.
+        pending_jobs = store.count_jobs(status="pending")
 
     if fmt == "json":
-        import json
         out: Dict[str, Any] = {
-            "hot": {
-                "memory_lines": hot_lines,
-                "corrections_lines": corrections_lines,
-            },
-            "warm": warm_count,
-            "cold": cold_count,
-            "entries_by_type": pattern_counts,
-            "pattern_keys": len(set(pkeys)),
+            "total_chunks": total_chunks,
+            "entries_by_type": type_counts,
+            "pattern_keys": pk_count,
+            "areas": area_counts,
+            "lifecycle": lifecycle_counts,
+            "avg_score": round(avg_score, 3),
+            "entity_index": entity_type_counts,
+            "hot_entities": [
+                {"entity_id": e["entity_id"], "score": e["score"]}
+                for e in top_entities
+            ],
+            "pending_jobs": pending_jobs,
         }
         print(json.dumps(out, indent=2))
         return
 
-    print("[status] Self-Improving Memory Status")
-    print(f"  HOT   : memory.md ({hot_lines} lines), corrections.md ({corrections_lines} lines)")
-    print(f"  WARM  : {warm_count} markdown files in projects/ + domains/")
-    print(f"  COLD  : {cold_count} archived markdown files")
-
-    if pattern_counts:
+    print("[status] Memory Status (SQLite-backed)")
+    print(f"  Chunks       : {total_chunks}")
+    print(f"  Avg Score    : {avg_score:.3f}")
+    print(f"  Pattern-Keys : {pk_count}")
+    print(f"  Pending Jobs : {pending_jobs}")
+    if type_counts:
         print("  Entries by type:")
-        for k, v in sorted(pattern_counts.items()):
+        for k, v in sorted(type_counts.items()):
             print(f"    {k}: {v}")
-
-    if pkeys:
-        print(f"  Pattern-Keys: {len(set(pkeys))} unique")
+    if lifecycle_counts:
+        print("  Lifecycle:")
+        for k, v in sorted(lifecycle_counts.items()):
+            print(f"    {k}: {v}")
+    if area_counts:
+        print("  Areas:")
+        for k, v in sorted(area_counts.items(), key=lambda x: -x[1])[:5]:
+            print(f"    {k}: {v} entries")
+    if top_entities:
+        print("  Hottest entities:")
+        for e in top_entities:
+            print(f"    {e['entity_id']}: score={e['score']:.2f}")
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -354,161 +739,84 @@ def cmd_search(args: argparse.Namespace) -> None:
         print("[search] Error: query required", file=sys.stderr)
         sys.exit(1)
 
-    results = search_content(base_dir, query, limit=args.limit or 20)
-
     fmt = getattr(args, "format", "text") or "text"
 
+    store = get_store(resolve_root(args))
+    with store:
+        # Search via entity index first (fast pattern-key lookup)
+        pattern_key = query if query.startswith("pk:") else None
+        if pattern_key:
+            entity_id = f"pattern-key:{pattern_key[3:]}"
+            idx_rows = store.query_entity_index(entity_id=entity_id)
+            chunk_ids = [r.node_id for r in idx_rows]
+            chunks = []
+            for cid in chunk_ids:
+                c = store.get_chunk(cid)
+                if c:
+                    chunks.append(c)
+        else:
+            # Full-text chunk search: list all and filter
+            limit = args.limit or 20
+            all_chunks = store.list_chunks(ListChunksQuery(limit=1000))
+            query_lower = query.lower()
+            chunks = [
+                c for c in all_chunks
+                if query_lower in c.content.lower()
+            ][:limit]
+
+        # Compute scores for ordering
+        scored = []
+        for c in chunks:
+            score_row = store.get_score(c.id)
+            score_val = score_row.total if score_row else 0.5
+            # Extract summary from content for display
+            summary_match = re.search(r"\*\*Summary\*\*:\s*(.+)", c.content)
+            summary_text = summary_match.group(1) if summary_match else c.content[:80]
+            scored.append({
+                "id": _extract_entry_id(c),
+                "chunk_id": c.id,
+                "summary": summary_text,
+                "type": c.metadata.tags[0] if c.metadata.tags else "?",
+                "date": c.metadata.timestamp.strftime("%Y-%m-%d"),
+                "score": score_val,
+                "content": c.content[:200],
+            })
+
+        if getattr(args, "touch", False):
+            # Explicitly record reuse when the caller is acting on a result.
+            # Plain search stays read-only so dedupe/review does not inflate recurrence.
+            now = get_now()
+            today = now.strftime("%Y-%m-%d")
+            for c in chunks:
+                current_rc = _extract_recurrence_count(c)
+                c.content = _replace_or_append_field(c.content, "Last-Seen", today)
+                c.content = _replace_or_append_field(c.content, "Recurrence-Count", str(current_rc + 1))
+                c.metadata.timestamp = now
+                c.metadata.time_range = (c.metadata.time_range[0], now)
+                store.upsert_chunks([c])
+                score_row = store.get_score(c.id)
+                if score_row:
+                    score_row.interaction_weight = max(score_row.interaction_weight + 0.1, (current_rc + 1) / 10.0)
+                    score_row.computed_at_ms = int(now.timestamp() * 1000)
+                    store.upsert_scores([score_row])
+                for tag in [t for t in c.metadata.tags if t.startswith("pattern-key:")]:
+                    pk = tag.split(":", 1)[1]
+                    _update_hotness(store, c, pk)
+
     if fmt == "json":
-        import json
-        print(json.dumps(results, indent=2))
+        print(json.dumps(scored, indent=2, default=str))
         return
 
-    if not results:
+    if not scored:
         print(f"[search] No results for '{query}'")
         return
 
-    print(f"[search] Found {len(results)} result(s) for '{query}':")
-    for r in results:
-        print(f"  {r['file']}:{r['line']} | {r['snippet'][:100]}")
+    # Sort by score descending
+    scored.sort(key=lambda x: -x["score"])
 
-    # Touch matched entries across all tiers — update Last-Seen and increment Recurrence-Count
-    today = get_now().strftime("%Y-%m-%d")
-    query_lower = query.lower()
-    total_updated = 0
-
-    touch_files: List[Path] = [base_dir / "memory.md"]
-    for subdir in ["projects", "domains", "archive"]:
-        touch_files.extend((base_dir / subdir).rglob("*.md"))
-
-    for touch_file in touch_files:
-        if not touch_file.exists():
-            continue
-        try:
-            text = touch_file.read_text(encoding="utf-8")
-            entries = _parse_entries(text)
-            updated = 0
-            for entry in entries:
-                if query_lower in entry.get("full_text", "").lower():
-                    old_text = entry["full_text"]
-                    body = entry["body"]
-                    meta = entry.get("metadata", {})
-                    rc = int(meta.get("Recurrence-Count", "0"))
-                    new_body = body
-                    new_body = re.sub(
-                        r"- \*\*Last-Seen\*\*:.*",
-                        f"- **Last-Seen**: {today}",
-                        new_body
-                    )
-                    new_body = re.sub(
-                        r"- \*\*Recurrence-Count\*\*: \d+",
-                        f"- **Recurrence-Count**: {rc + 1}",
-                        new_body
-                    )
-                    new_full = old_text.replace(body, new_body)
-                    text = text.replace(old_text, new_full)
-                    updated += 1
-            if updated > 0:
-                touch_file.write_text(text, encoding="utf-8")
-                total_updated += updated
-        except Exception:
-            pass
-
-    if total_updated > 0:
-        print(f"[search] Updated Recurrence-Count for {total_updated} entry/entries across all tiers")
-
-
-def _append_to_memory(base_dir: Path, entry: str) -> None:
-    target = base_dir / "memory.md"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    prefix = "\n" if target.exists() and target.read_text(encoding="utf-8").rstrip() else ""
-    with target.open("a", encoding="utf-8") as f:
-        f.write(prefix)
-        f.write(entry.rstrip())
-        f.write("\n")
-
-
-def _append_to_corrections(base_dir: Path, row: str) -> None:
-    target = base_dir / "corrections.md"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("a", encoding="utf-8") as f:
-        f.write(row)
-
-
-ENTRY_HEADING_RE = re.compile(r'^#{2,3}\s+.*[A-Z]{3}-\d{8}-\d{3}')
-
-
-def parse_file_blocks(path: Path) -> List[Dict[str, Any]]:
-    if not path.exists():
-        return []
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines(keepends=True)
-    blocks: List[Dict[str, Any]] = []
-    i = 0
-    while i < len(lines):
-        if ENTRY_HEADING_RE.match(lines[i]):
-            start = i
-            i += 1
-            while i < len(lines):
-                if ENTRY_HEADING_RE.match(lines[i]):
-                    break
-                i += 1
-            block_lines = lines[start:i]
-            while block_lines and block_lines[-1].strip() == "":
-                block_lines.pop()
-            block_text = "".join(block_lines)
-            blocks.append({
-                "text": block_text,
-                "source": path,
-            })
-        else:
-            i += 1
-    return blocks
-
-
-META_PATTERNS = [
-    (re.compile(r'^[ \t]*[-*][ \t]+(?:\*\*)?Pattern-Key(?:\*\*)?[ \t]*[:：][ \t]*(.*?)$', re.IGNORECASE), "pattern_key"),
-    (re.compile(r'^[ \t]*[-*][ \t]+(?:\*\*)?First-Seen(?:\*\*)?[ \t]*[:：][ \t]*(.*?)$', re.IGNORECASE), "first_seen"),
-    (re.compile(r'^[ \t]*[-*][ \t]+(?:\*\*)?Last-Seen(?:\*\*)?[ \t]*[:：][ \t]*(.*?)$', re.IGNORECASE), "last_seen"),
-    (re.compile(r'^[ \t]*[-*][ \t]+(?:\*\*)?Recurrence-Count(?:\*\*)?[ \t]*[:：][ \t]*(.*?)$', re.IGNORECASE), "recurrence_count"),
-    (re.compile(r'^[ \t]*[-*][ \t]+(?:\*\*)?Area(?:\*\*)?[ \t]*[:：][ \t]*(.*?)$', re.IGNORECASE), "area"),
-]
-
-
-def parse_block_metadata(block_text: str) -> Dict[str, str]:
-    meta: Dict[str, str] = {}
-    for pattern, key in META_PATTERNS:
-        for line in block_text.splitlines():
-            m = pattern.match(line)
-            if m:
-                meta[key] = m.group(1).strip()
-                break
-    return meta
-
-
-def extract_entry_id(block_text: str) -> Optional[str]:
-    for line in block_text.splitlines():
-        m = re.search(r'([A-Z]{3}-\d{8}-\d{3})', line)
-        if m:
-            return m.group(1)
-    return None
-
-
-def parse_date(date_str: str) -> Optional[datetime]:
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(date_str.strip(), fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None
-
-
-def days_since(date_str: str) -> Optional[int]:
-    dt = parse_date(date_str)
-    if not dt:
-        return None
-    now = get_now().astimezone(timezone.utc)
-    dt = dt.astimezone(timezone.utc)
-    return (now - dt).days
+    print(f"[search] Found {len(scored)} result(s) for '{query}':")
+    for s in scored:
+        print(f"  [{s['score']:.2f}] {s['date']} {s['type']} {s['id']} | {s['summary'][:80]}")
 
 
 def append_block_to_file(path: Path, block_text: str) -> None:
@@ -542,36 +850,6 @@ def remove_block_from_file(path: Path, block_text: str) -> None:
     path.write_text(new_text, encoding="utf-8")
 
 
-def _do_dedup_check(base_dir: Path, content: str, force: bool) -> bool:
-    existing = search_content(base_dir, content, limit=5)
-    if not existing:
-        return True
-    exact = []
-    similar = []
-    for e in existing:
-        snippet = e["snippet"]
-        ratio = difflib.SequenceMatcher(None, content.lower(), snippet.lower()).ratio()
-        if ratio > 0.8:
-            exact.append(e)
-        elif ratio > 0.6:
-            similar.append(e)
-    if exact:
-        print(f"[log] Potential exact duplicates ({len(exact)}):")
-        for e in exact:
-            snippet = e["snippet"][:80]
-            print(f"  - {e['file']}:{e['line']}: {snippet}...")
-    if similar:
-        print(f"[log] Similar entries found ({len(similar)}):")
-        for e in similar:
-            snippet = e["snippet"][:80]
-            ratio = difflib.SequenceMatcher(None, content.lower(), snippet.lower()).ratio()
-            print(f"  - {e['file']}:{e['line']} (similarity={ratio:.0%}): {snippet}...")
-    if exact or similar:
-        if not force:
-            print("[log] Aborting. Use --force to skip dedup check.")
-            return False
-    return True
-
 
 def _do_volatile_check(text: str, force: bool) -> bool:
     warnings = check_volatile_patterns(text)
@@ -587,6 +865,16 @@ def _do_volatile_check(text: str, force: bool) -> bool:
     return True
 
 
+def _validate_pattern_key(pattern_key: str) -> None:
+    """Warn if Pattern-Key lacks namespaced format (project:key or domain:key)."""
+    if pattern_key and ":" not in pattern_key:
+        print(
+            f"[warning] Pattern-Key '{pattern_key}' lacks namespace. "
+            f"Use 'project:key' or 'domain:key' format (e.g., 'db:migration' not 'migration').",
+            file=sys.stderr,
+        )
+
+
 def cmd_log_correction(args: argparse.Namespace) -> None:
     base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
@@ -594,25 +882,31 @@ def cmd_log_correction(args: argparse.Namespace) -> None:
     summary = redact_secrets(args.summary or "")
     correct = redact_secrets(args.correct or "")
     pattern_key = args.pattern or ""
+    _validate_pattern_key(pattern_key)
+    area = getattr(args, "area", "") or ""
 
     if not summary:
         print("[log-correction] Error: --summary required", file=sys.stderr)
         sys.exit(1)
+    if not correct:
+        print("[log-correction] Error: --correct required", file=sys.stderr)
+        sys.exit(1)
 
     search_term = f"{summary} {correct} {pattern_key}".strip()
-    if not _do_dedup_check(base_dir, search_term, args.force):
-        return
     if not _do_volatile_check(search_term, args.force):
         return
 
-    entry_id = generate_id("COR", base_dir)
-    today = get_now().strftime("%Y-%m-%d")
-
-    row = f"| {entry_id} | {today} | {pattern_key} | {summary} | {correct} | ⏳ pending |\n"
-    _append_to_corrections(base_dir, row)
-    print(f"[log-correction] Logged: {entry_id}")
-
-    update_index(base_dir)
+    store = get_store(resolve_root(args))
+    with store:
+        details = f"What I got wrong: {summary}\nCorrect answer: {correct}"
+        entry_id = _ingest_entry(
+            store, "COR", summary, details, pattern_key, area, force=args.force,
+        )
+    if entry_id:
+        print(f"[log-correction] Logged: {entry_id}")
+        update_index(base_dir)
+    else:
+        print(f"[log-correction] Skipped (duplicate): {summary[:60]}...")
 
 
 def cmd_log_learning(args: argparse.Namespace) -> None:
@@ -622,6 +916,7 @@ def cmd_log_learning(args: argparse.Namespace) -> None:
     summary = redact_secrets(args.summary or "")
     details = redact_secrets(args.details or "")
     pattern_key = args.pattern or ""
+    _validate_pattern_key(pattern_key)
     area = getattr(args, "area", "") or ""
 
     if not summary:
@@ -629,31 +924,19 @@ def cmd_log_learning(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     search_term = f"{summary} {details} {pattern_key}".strip()
-    if not _do_dedup_check(base_dir, search_term, args.force):
-        return
     if not _do_volatile_check(search_term, args.force):
         return
 
-    entry_id = generate_id("LRN", base_dir)
-    today = get_now().strftime("%Y-%m-%d")
-
-    section = f"### {entry_id} ({today})"
-    if pattern_key:
-        section += f" [Pattern-Key: {pattern_key}]"
-    section += f"\n- **Type**: LRN\n- **Summary**: {summary}\n"
-    if details:
-        section += f"- **Details**: {details}\n"
-    if area:
-        section += f"- **Area**: {area}\n"
-    section += f"- **First-Seen**: {today}\n"
-    section += f"- **Last-Seen**: {today}\n"
-    section += f"- **Recurrence-Count**: 1\n"
-    section += "\n"
-
-    _append_to_memory(base_dir, section)
-    print(f"[log-learning] Logged: {entry_id}")
-
-    update_index(base_dir)
+    store = get_store(resolve_root(args))
+    with store:
+        entry_id = _ingest_entry(
+            store, "LRN", summary, details, pattern_key, area, force=args.force,
+        )
+    if entry_id:
+        print(f"[log-learning] Logged: {entry_id}")
+        update_index(base_dir)
+    else:
+        print(f"[log-learning] Skipped (duplicate): {summary[:60]}...")
 
 
 def cmd_log_error(args: argparse.Namespace) -> None:
@@ -663,6 +946,7 @@ def cmd_log_error(args: argparse.Namespace) -> None:
     summary = redact_secrets(args.summary or "")
     details = redact_secrets(args.details or "")
     pattern_key = args.pattern or ""
+    _validate_pattern_key(pattern_key)
     area = getattr(args, "area", "") or ""
 
     if not summary:
@@ -670,31 +954,19 @@ def cmd_log_error(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     search_term = f"{summary} {details} {pattern_key}".strip()
-    if not _do_dedup_check(base_dir, search_term, args.force):
-        return
     if not _do_volatile_check(search_term, args.force):
         return
 
-    entry_id = generate_id("ERR", base_dir)
-    today = get_now().strftime("%Y-%m-%d")
-
-    section = f"### {entry_id} ({today})"
-    if pattern_key:
-        section += f" [Pattern-Key: {pattern_key}]"
-    section += f"\n- **Type**: ERR\n- **Summary**: {summary}\n"
-    if details:
-        section += f"- **Details**: {details}\n"
-    if area:
-        section += f"- **Area**: {area}\n"
-    section += f"- **First-Seen**: {today}\n"
-    section += f"- **Last-Seen**: {today}\n"
-    section += f"- **Recurrence-Count**: 1\n"
-    section += "\n"
-
-    _append_to_memory(base_dir, section)
-    print(f"[log-error] Logged: {entry_id}")
-
-    update_index(base_dir)
+    store = get_store(resolve_root(args))
+    with store:
+        entry_id = _ingest_entry(
+            store, "ERR", summary, details, pattern_key, area, force=args.force,
+        )
+    if entry_id:
+        print(f"[log-error] Logged: {entry_id}")
+        update_index(base_dir)
+    else:
+        print(f"[log-error] Skipped (duplicate): {summary[:60]}...")
 
 
 def cmd_log_feature(args: argparse.Namespace) -> None:
@@ -704,6 +976,7 @@ def cmd_log_feature(args: argparse.Namespace) -> None:
     summary = redact_secrets(args.summary or "")
     details = redact_secrets(args.details or "")
     pattern_key = args.pattern or ""
+    _validate_pattern_key(pattern_key)
     area = getattr(args, "area", "") or ""
 
     if not summary:
@@ -711,31 +984,19 @@ def cmd_log_feature(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     search_term = f"{summary} {details} {pattern_key}".strip()
-    if not _do_dedup_check(base_dir, search_term, args.force):
-        return
     if not _do_volatile_check(search_term, args.force):
         return
 
-    entry_id = generate_id("FTR", base_dir)
-    today = get_now().strftime("%Y-%m-%d")
-
-    section = f"### {entry_id} ({today})"
-    if pattern_key:
-        section += f" [Pattern-Key: {pattern_key}]"
-    section += f"\n- **Type**: FTR\n- **Summary**: {summary}\n"
-    if details:
-        section += f"- **Details**: {details}\n"
-    if area:
-        section += f"- **Area**: {area}\n"
-    section += f"- **First-Seen**: {today}\n"
-    section += f"- **Last-Seen**: {today}\n"
-    section += f"- **Recurrence-Count**: 1\n"
-    section += "\n"
-
-    _append_to_memory(base_dir, section)
-    print(f"[log-feature] Logged: {entry_id}")
-
-    update_index(base_dir)
+    store = get_store(resolve_root(args))
+    with store:
+        entry_id = _ingest_entry(
+            store, "FTR", summary, details, pattern_key, area, force=args.force,
+        )
+    if entry_id:
+        print(f"[log-feature] Logged: {entry_id}")
+        update_index(base_dir)
+    else:
+        print(f"[log-feature] Skipped (duplicate): {summary[:60]}...")
 
 
 def cmd_log(args: argparse.Namespace) -> None:
@@ -745,6 +1006,7 @@ def cmd_log(args: argparse.Namespace) -> None:
     log_type = (args.type or "LRN").upper()
     content = redact_secrets(args.content or "")
     pattern_key = args.pattern or ""
+    _validate_pattern_key(pattern_key)
     correct = redact_secrets(args.correct or "")
     area = getattr(args, "area", "") or ""
 
@@ -753,37 +1015,27 @@ def cmd_log(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     search_term = f"{content} {pattern_key}".strip()
-    if not _do_dedup_check(base_dir, search_term, args.force):
-        return
     if not _do_volatile_check(search_term, args.force):
         return
 
-    today = get_now().strftime("%Y-%m-%d")
-
     if log_type == "COR":
-        entry_id = generate_id("COR", base_dir)
-        row = f"| {entry_id} | {today} | {pattern_key} | {content} | {correct} | ⏳ pending |\n"
-        _append_to_corrections(base_dir, row)
-        print(f"[log] Correction logged: {entry_id}")
+        details = f"What I got wrong: {content}\nCorrect answer: {correct}"
+        entry_type = "COR"
     else:
         prefix = ID_PREFIXES.get(log_type, "LRN")
-        entry_id = generate_id(prefix, base_dir)
-        section = f"### {entry_id} ({today})"
-        if pattern_key:
-            section += f" [Pattern-Key: {pattern_key}]"
-        section += f"\n- **Type**: {log_type}\n- **Summary**: {content}\n"
-        if correct:
-            section += f"- **Correct Answer**: {correct}\n"
-        if area:
-            section += f"- **Area**: {area}\n"
-        section += f"- **First-Seen**: {today}\n"
-        section += f"- **Last-Seen**: {today}\n"
-        section += f"- **Recurrence-Count**: 1\n"
-        section += "\n"
-        _append_to_memory(base_dir, section)
-        print(f"[log] Entry logged: {entry_id}")
+        entry_type = prefix
+        details = content
 
-    update_index(base_dir)
+    store = get_store(resolve_root(args))
+    with store:
+        entry_id = _ingest_entry(
+            store, entry_type, content, details, pattern_key, area, force=args.force,
+        )
+    if entry_id:
+        print(f"[log] {entry_type} logged: {entry_id}")
+        update_index(base_dir)
+    else:
+        print(f"[log] Skipped (duplicate): {content[:60]}...")
 
 
 def _parse_date(date_str: str) -> Optional[datetime]:
@@ -858,209 +1110,110 @@ def cmd_maintain(args: argparse.Namespace) -> None:
     base_dir = get_base_dir(resolve_root(args))
     ensure_structure(base_dir)
 
-    now = get_now()
-    apply_arg = getattr(args, "apply", None)
-    if apply_arg is None:
-        dry_run = getattr(args, "dry_run", True)
-    else:
-        dry_run = bool(getattr(args, "dry_run", False)) or not bool(apply_arg)
+    dry_run = getattr(args, "dry_run", True)
     fmt = getattr(args, "format", "text") or "text"
 
-    results: Dict[str, List[Dict[str, Any]]] = {
-        "stale_hot": [],
-        "stale_warm": [],
-        "promote_candidates": [],
-        "promote_to_hot": [],
-        "insufficient_metadata": [],
-    }
+    store = get_store(resolve_root(args))
+    with store:
+        all_chunks = store.list_chunks(ListChunksQuery(limit=10000))
+        now = get_now()
 
-    memory_file = base_dir / "memory.md"
-    if memory_file.exists():
-        text = memory_file.read_text(encoding="utf-8")
-        entries = _parse_entries(text)
-        for entry in entries:
-            last_seen = entry.get("last_seen")
-            if last_seen is None:
-                last_seen = _parse_date(entry.get("date_str", ""))
+        stale_hot: List[Dict[str, Any]] = []
+        stale_warm: List[Dict[str, Any]] = []
+        promote_candidates: List[Dict[str, Any]] = []
+        insufficient_metadata: List[Dict[str, Any]] = []
 
-            if last_seen is None:
-                results["insufficient_metadata"].append({
-                    "id": entry["id"],
-                    "reason": "missing Last-Seen",
-                    "source": "memory.md",
-                })
-                continue
+        for c in all_chunks:
+            last_seen = _extract_last_seen(c)
+            days_stale = (now - last_seen).days
+            lifecycle = store.get_chunk_lifecycle(c.id) or CHUNK_STATUS_ADMITTED
 
-            days_since = (now - last_seen).days
-            if days_since >= 30:
-                area = entry.get("area", "") or "general"
-                if area.startswith("project:"):
-                    target_rel = f"projects/{area[8:]}.md"
-                elif area.startswith("domain:"):
-                    target_rel = f"domains/{area[7:]}.md"
-                else:
-                    target_rel = "domains/general.md"
+            # Recurrence is entry metadata, not a derived score signal.
+            rc = _extract_recurrence_count(c)
 
-                results["stale_hot"].append({
-                    "id": entry["id"],
+            entry_id = _extract_entry_id(c)
+
+            # Staleness logic
+            if lifecycle == CHUNK_STATUS_BUFFERED and days_stale >= 90:
+                stale_warm.append({
+                    "id": entry_id,
+                    "chunk_id": c.id,
                     "last_seen": last_seen.strftime("%Y-%m-%d"),
-                    "days_stale": days_since,
-                    "action": "HOT_TO_WARM",
-                    "target": target_rel,
-                    "source": "memory.md",
-                    "entry": entry,
+                    "days_stale": days_stale,
+                    "target": "archive/",
                 })
-
-            recurrence = entry.get("recurrence_count", 0)
-            if recurrence >= 3:
-                results["promote_candidates"].append({
-                    "id": entry["id"],
-                    "recurrence_count": recurrence,
-                    "action": "PROMOTE_CANDIDATE",
-                    "source": "memory.md",
-                })
-
-    warm_files: List[Path] = []
-    for subdir in ["projects", "domains"]:
-        warm_files.extend((base_dir / subdir).rglob("*.md"))
-
-    for warm_file in warm_files:
-        text = warm_file.read_text(encoding="utf-8")
-        entries = _parse_entries(text)
-        rel_path = str(warm_file.relative_to(base_dir))
-        for entry in entries:
-            last_seen = entry.get("last_seen")
-            if last_seen is None:
-                last_seen = _parse_date(entry.get("date_str", ""))
-
-            if last_seen is None:
-                results["insufficient_metadata"].append({
-                    "id": entry["id"],
-                    "reason": "missing Last-Seen",
-                    "source": rel_path,
-                })
-                continue
-
-            days_since = (now - last_seen).days
-            if days_since >= 90:
-                archive_name = warm_file.stem + ".md"
-                target_rel = f"archive/{archive_name}"
-
-                results["stale_warm"].append({
-                    "id": entry["id"],
+            elif lifecycle == CHUNK_STATUS_ADMITTED and days_stale >= 30:
+                stale_hot.append({
+                    "id": entry_id,
+                    "chunk_id": c.id,
                     "last_seen": last_seen.strftime("%Y-%m-%d"),
-                    "days_stale": days_since,
-                    "action": "WARM_TO_COLD",
-                    "target": target_rel,
-                    "source": rel_path,
-                    "entry": entry,
+                    "days_stale": days_stale,
+                    "target": "warm",
                 })
 
-            recurrence = entry.get("recurrence_count", 0)
-            if recurrence >= 3:
-                days_since_last = days_since(entry.get("metadata", {}).get("Last-Seen", ""))
-                if last_seen and days_since_last is not None and days_since_last <= 7:
-                    results["promote_to_hot"].append({
-                        "id": entry["id"],
-                        "last_seen": last_seen.strftime("%Y-%m-%d"),
-                        "days_since": days_since_last,
-                        "recurrence_count": recurrence,
-                        "action": "WARM_TO_HOT",
-                        "source": rel_path,
-                        "entry": entry,
-                    })
-                results["promote_candidates"].append({
-                    "id": entry["id"],
-                    "recurrence_count": recurrence,
-                    "action": "PROMOTE_CANDIDATE",
-                    "source": rel_path,
+            # Promotion criteria
+            if rc >= 3:
+                promote_candidates.append({
+                    "id": entry_id,
+                    "chunk_id": c.id,
+                    "recurrence_count": rc,
                 })
 
-    if not dry_run:
-        if results["stale_hot"]:
-            memory_text = memory_file.read_text(encoding="utf-8") if memory_file.exists() else ""
-            entries_to_remove = [r["entry"] for r in results["stale_hot"]]
+        if not dry_run:
+            for r in stale_hot:
+                store.set_chunk_lifecycle(r["chunk_id"], CHUNK_STATUS_BUFFERED)
+            for r in stale_warm:
+                store.set_chunk_lifecycle(r["chunk_id"], CHUNK_STATUS_SEALED)
 
-            by_target: Dict[str, List[Dict[str, Any]]] = {}
-            for r in results["stale_hot"]:
-                by_target.setdefault(r["target"], []).append(r)
-
-            for target_rel, items in by_target.items():
-                target_path = base_dir / target_rel
-                for item in items:
-                    append_block_to_file(target_path, item["entry"]["full_text"])
-
-            new_memory_text = _remove_entries_from_text(memory_text, entries_to_remove)
-            if new_memory_text != memory_text:
-                memory_file.write_text(new_memory_text, encoding="utf-8")
-
-        if results["stale_warm"]:
-            by_source: Dict[str, List[Dict[str, Any]]] = {}
-            for r in results["stale_warm"]:
-                by_source.setdefault(r["source"], []).append(r)
-
-            for source_rel, items in by_source.items():
-                source_path = base_dir / source_rel
-                source_text = source_path.read_text(encoding="utf-8")
-                entries_to_remove = [item["entry"] for item in items]
-
-                by_target2: Dict[str, List[Dict[str, Any]]] = {}
-                for item in items:
-                    by_target2.setdefault(item["target"], []).append(item)
-
-                for target_rel, target_items in by_target2.items():
-                    target_path = base_dir / target_rel
-                    for item in target_items:
-                        append_block_to_file(target_path, item["entry"]["full_text"])
-
-                new_source_text = _remove_entries_from_text(source_text, entries_to_remove)
-                if new_source_text != source_text:
-                    source_path.write_text(new_source_text, encoding="utf-8")
-
-    # WARM→HOT: promote entries with Recurrence-Count >= 3 and Last-Seen within 7 days
-    if not dry_run and results.get("promote_to_hot"):
-        memory_text = memory_file.read_text(encoding="utf-8") if memory_file.exists() else ""
-        for r in results["promote_to_hot"]:
-            # Remove from WARM file
-            source_path = base_dir / r["source"]
-            if source_path.exists():
-                source_text = source_path.read_text(encoding="utf-8")
-                source_text = _remove_entries_from_text(source_text, [r["entry"]])
-                source_path.write_text(source_text, encoding="utf-8")
-            # Append to HOT memory.md
-            append_block_to_file(memory_file, r["entry"]["full_text"])
-
-    if fmt == "json":
-        json_out = {
-            "stale_hot": [{k: v for k, v in r.items() if k != "entry"} for r in results["stale_hot"]],
-            "stale_warm": [{k: v for k, v in r.items() if k != "entry"} for r in results["stale_warm"]],
-            "promote_candidates": results["promote_candidates"],
-            "insufficient_metadata": results["insufficient_metadata"],
+        results = {
+            "stale_hot": stale_hot,
+            "stale_warm": stale_warm,
+            "promote_candidates": promote_candidates,
+            "insufficient_metadata": insufficient_metadata,
         }
-        import json
-        print(json.dumps(json_out, indent=2))
-    else:
-        print("[maintain] Scanning memory tiers...")
-        has_any = bool(results["stale_hot"] or results["stale_warm"] or results["promote_candidates"] or results["insufficient_metadata"])
-        if results["stale_hot"]:
-            print("HOT -> WARM (stale >= 30 days):")
-            for r in results["stale_hot"]:
-                print(f"  - {r['id']}: Last-Seen {r['last_seen']} ({r['days_stale']} days ago) -> {r['target']}")
-        if results["stale_warm"]:
-            print("WARM -> COLD (stale >= 90 days):")
-            for r in results["stale_warm"]:
-                print(f"  - {r['id']} in {r['source']}: Last-Seen {r['last_seen']} ({r['days_stale']} days ago) -> {r['target']}")
-        if results["promote_candidates"]:
-            print("Promotion candidates:")
-            for r in results["promote_candidates"]:
-                print(f"  - {r['id']}: Recurrence-Count={r['recurrence_count']}")
-        if results["insufficient_metadata"]:
-            print("Insufficient metadata:")
-            for r in results["insufficient_metadata"]:
-                print(f"  - {r['id']}: {r['reason']}")
-        if not has_any:
-            print("  All entries healthy. No action needed.")
+        _update_heartbeat_state(base_dir, results, dry_run)
 
+        if fmt == "json":
+            print(json.dumps({
+                "stale_hot": [
+                    {"id": r["id"], "days_stale": r["days_stale"], "action": "HOT_TO_WARM"}
+                    for r in stale_hot
+                ],
+                "stale_warm": [
+                    {"id": r["id"], "days_stale": r["days_stale"], "action": "WARM_TO_COLD"}
+                    for r in stale_warm
+                ],
+                "promote_candidates": promote_candidates,
+                "insufficient_metadata": insufficient_metadata,
+            }, indent=2))
+            return
+
+        if dry_run:
+            print("[maintain] DRY RUN (use --apply to execute)")
+        else:
+            print("[maintain] APPLYING changes")
+
+        has_any = bool(stale_hot or stale_warm or promote_candidates or insufficient_metadata)
+
+        if fmt == "text":
+            if stale_hot:
+                print("HOT -> WARM (stale >= 30 days):")
+                for r in stale_hot:
+                    print(f"  - {r['id']}: Last-Seen {r['last_seen']} ({r['days_stale']} days ago)")
+            if stale_warm:
+                print("WARM -> COLD (stale >= 90 days):")
+                for r in stale_warm:
+                    print(f"  - {r['id']}: Last-Seen {r['last_seen']} ({r['days_stale']} days ago)")
+            if promote_candidates:
+                print("Promotion candidates:")
+                for r in promote_candidates:
+                    print(f"  - {r['id']}: Recurrence-Count={r['recurrence_count']}")
+            if insufficient_metadata:
+                print("Insufficient metadata:")
+                for r in insufficient_metadata:
+                    print(f"  - {r['id']}: {r['reason']}")
+            if not has_any:
+                print("  All entries healthy. No action needed.")
 
 
 def cmd_promote(args: argparse.Namespace) -> None:
@@ -1072,33 +1225,139 @@ def cmd_promote(args: argparse.Namespace) -> None:
     if not target_file:
         print("[promote] Error: --to TARGET is required", file=sys.stderr)
         sys.exit(1)
-    found_entry = None
-    found_source = None
-    for src in [base_dir / "memory.md"] + list((base_dir / "projects").rglob("*.md")) + list((base_dir / "domains").rglob("*.md")):
-        if not src.exists():
-            continue
-        text = src.read_text(encoding="utf-8")
-        entries = _parse_entries(text)
-        for e in entries:
-            if e["id"] == entry_id:
-                found_entry = e
-                found_source = src
-                break
-        if found_entry:
-            break
-    if not found_entry:
-        print(f"[promote] Entry {entry_id} not found", file=sys.stderr)
-        sys.exit(1)
-    target_path = base_dir.parent / target_file if "/" in target_file or not target_file.endswith(".md") else base_dir.parent / target_file
-    if not target_path.parent.exists():
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-    promoted_text = found_entry["full_text"] + f"\n- **Status**: promoted\n- **Promoted-To**: {target_file}\n"
-    append_block_to_file(target_path, promoted_text)
-    src_text = found_source.read_text(encoding="utf-8")
-    src_text = _remove_entries_from_text(src_text, [found_entry])
-    found_source.write_text(src_text, encoding="utf-8")
-    print(f"[promote] Moved {entry_id} from {found_source.relative_to(base_dir.parent)} to {target_file}")
+
+    store = get_store(resolve_root(args))
+    with store:
+        chunk = _find_chunk_by_entry_id(store, entry_id)
+        if not chunk:
+            print(f"[promote] Entry {entry_id} not found", file=sys.stderr)
+            sys.exit(1)
+
+        workspace_root = base_dir.parent.resolve()
+        target_path = (workspace_root / target_file).resolve()
+        try:
+            target_path.relative_to(workspace_root)
+        except ValueError:
+            print(f"[promote] Error: target must stay under workspace root: {target_file}", file=sys.stderr)
+            sys.exit(1)
+
+        if not target_path.parent.exists():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        chunk.content = _replace_or_append_field(chunk.content, "Status", "promoted")
+        chunk.content = _replace_or_append_field(chunk.content, "Promoted-To", target_file)
+        chunk.metadata.tags = [t for t in chunk.metadata.tags if not t.startswith("status:")]
+        chunk.metadata.tags.append("status:promoted")
+
+        promoted_text = _render_chunk_as_markdown(chunk).rstrip()
+        append_block_to_file(target_path, promoted_text)
+
+        store.upsert_chunks([chunk])
+        store.set_chunk_lifecycle(chunk.id, CHUNK_STATUS_SEALED)
+
+    print(f"[promote] Promoted {_extract_entry_id(chunk)} to {target_file}")
     update_index(base_dir)
+
+
+def cmd_export(args: argparse.Namespace) -> None:
+    """Export all entries as human-readable markdown (backed by SQLite)."""
+    base_dir = get_base_dir(resolve_root(args))
+    fmt = getattr(args, "format", "text") or "text"
+    store = get_store(resolve_root(args))
+    with store:
+        chunks = store.list_chunks(ListChunksQuery(limit=10000))
+
+    rendered = [_render_chunk_as_markdown(c) for c in chunks]
+
+    if fmt == "json":
+        output_obj = [
+            {
+                "id": _extract_entry_id(c),
+                "chunk_id": c.id,
+                "type": c.metadata.tags[0] if c.metadata.tags else "LRN",
+                "status": _extract_status(c),
+                "content": _render_chunk_as_markdown(c),
+            }
+            for c in chunks
+        ]
+        output = json.dumps(output_obj, indent=2)
+    else:
+        output = "\n".join(["# Memory (SQLite-backed export)", ""] + rendered)
+
+    file_path = args.output if hasattr(args, "output") and args.output else ""
+    if file_path:
+        Path(file_path).write_text(output, encoding="utf-8")
+        print(f"[export] Wrote {len(chunks)} entries to {file_path}")
+    else:
+        print(output)
+
+
+_SOURCE_KIND_MAP = {
+    "chat": SourceKind.CHAT,
+    "email": SourceKind.EMAIL,
+    "document": SourceKind.DOCUMENT,
+}
+
+
+def cmd_ingest(args: argparse.Namespace) -> None:
+    """Ingest external content through the full chunker pipeline."""
+    base_dir = get_base_dir(resolve_root(args))
+    ensure_structure(base_dir)
+
+    kind = _SOURCE_KIND_MAP.get((args.kind or "").lower())
+    if kind is None:
+        print(f"[ingest] Error: unknown kind '{args.kind}'. Use one of: chat, email, document", file=sys.stderr)
+        sys.exit(1)
+
+    if args.file:
+        try:
+            content = Path(args.file).read_text(encoding="utf-8")
+            source_id = args.source_id or f"file/{args.file}"
+        except Exception as e:
+            print(f"[ingest] Error reading {args.file}: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        content = sys.stdin.read()
+        source_id = args.source_id or "stdin"
+
+    if not content.strip():
+        print("[ingest] Error: empty content", file=sys.stderr)
+        sys.exit(1)
+
+    owner = getattr(args, "owner", "") or "user"
+    now = get_now()
+    metadata = Metadata(
+        source_kind=kind,
+        source_id=source_id,
+        owner=owner,
+        timestamp=now,
+        time_range=(now, now),
+        tags=args.tags.split(",") if args.tags else [],
+    )
+
+    store = get_store(resolve_root(args))
+    with store:
+        result = ingest_markdown(
+            store,
+            source_kind=kind,
+            source_id=source_id,
+            markdown=content,
+            metadata=metadata,
+            dedup=not args.no_dedup,
+        )
+
+    if result.already_ingested:
+        print(f"[ingest] Skipped (already ingested): {source_id}")
+        return
+
+    total = result.chunks_written + result.chunks_dropped
+    print(f"[ingest] Wrote {result.chunks_written} chunk(s) from '{source_id}' "
+          f"({result.chunks_dropped} dropped, {total} total)")
+    if result.chunk_ids:
+        for cid in result.chunk_ids[:5]:
+            print(f"  {cid}")
+        if len(result.chunk_ids) > 5:
+            print(f"  ... and {len(result.chunk_ids) - 5} more")
 
 
 def cmd_edit(args: argparse.Namespace) -> None:
@@ -1114,34 +1373,82 @@ def cmd_edit(args: argparse.Namespace) -> None:
         print("[edit] Error: at least one of --status, --last-seen, --recurrence is required", file=sys.stderr)
         sys.exit(1)
 
-    found = False
-    for src in [base_dir / "memory.md"] + list((base_dir / "projects").rglob("*.md")) + list((base_dir / "domains").rglob("*.md")) + list((base_dir / "archive").rglob("*.md")):
-        if not src.exists():
+    store = get_store(resolve_root(args))
+    with store:
+        chunk = _find_chunk_by_entry_id(store, entry_id)
+        if not chunk:
+            print(f"[edit] Entry {entry_id} not found", file=sys.stderr)
+            sys.exit(1)
+
+        if new_status:
+            chunk.content = _replace_or_append_field(chunk.content, "Status", new_status)
+            chunk.metadata.tags = [t for t in chunk.metadata.tags if not t.startswith("status:")]
+            chunk.metadata.tags.append(f"status:{new_status}")
+            if new_status in {"promoted", "promoted_to_skill", "resolved"}:
+                store.set_chunk_lifecycle(chunk.id, CHUNK_STATUS_SEALED)
+        if new_last_seen:
+            parsed = _parse_date(new_last_seen)
+            if not parsed:
+                print(f"[edit] Error: invalid --last-seen date: {new_last_seen}", file=sys.stderr)
+                sys.exit(1)
+            chunk.content = _replace_or_append_field(chunk.content, "Last-Seen", new_last_seen)
+            chunk.metadata.timestamp = parsed
+            chunk.metadata.time_range = (chunk.metadata.time_range[0], parsed)
+        if new_recurrence is not None:
+            chunk.content = _replace_or_append_field(chunk.content, "Recurrence-Count", str(new_recurrence))
+            score_row = store.get_score(chunk.id)
+            if score_row:
+                score_row.interaction_weight = max(score_row.interaction_weight, new_recurrence / 10.0)
+                score_row.computed_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                store.upsert_scores([score_row])
+
+        store.upsert_chunks([chunk])
+
+    print(f"[edit] Updated {_extract_entry_id(chunk)}")
+
+def _update_heartbeat_state(base_dir: Path, results: Dict[str, List[Dict[str, Any]]], dry_run: bool) -> None:
+    """Write/update heartbeat-state.md with timestamp and result summary from maintain."""
+    state_file = base_dir / "heartbeat-state.md"
+    now = get_now()
+    timestamp = now.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    action_count = sum(len(v) for k, v in results.items() if k != "entry")
+    result = f"dry-run: {action_count} candidates identified" if dry_run else f"apply: {action_count} actions applied"
+
+    lines = [
+        "# Self-Improving Heartbeat State",
+        "",
+        f"last_heartbeat_started_at: {timestamp}",
+        f"last_reviewed_change_at: {timestamp}",
+        f"last_heartbeat_result: {result}",
+        "",
+        "## Last actions",
+    ]
+
+    actions: List[str] = []
+    for category, items in results.items():
+        if category == "entry":
             continue
-        text = src.read_text(encoding="utf-8")
-        entries = _parse_entries(text)
-        for e in entries:
-            if e["id"] == entry_id:
-                old_text = e["full_text"]
-                new_text = old_text
-                if new_status:
-                    new_text = re.sub(r"- \*\*Status\*\*:.*", f"- **Status**: {new_status}", new_text)
-                    if "- **Status**:" not in new_text:
-                        new_text = new_text.rstrip() + f"\n- **Status**: {new_status}\n"
-                if new_last_seen:
-                    new_text = re.sub(r"- \*\*Last-Seen\*\*:.*", f"- **Last-Seen**: {new_last_seen}", new_text)
-                if new_recurrence is not None:
-                    new_text = re.sub(r"- \*\*Recurrence-Count\*\*: \\d+", f"- **Recurrence-Count**: {new_recurrence}", new_text)
-                text = text.replace(old_text, new_text)
-                src.write_text(text, encoding="utf-8")
-                print(f"[edit] Updated {entry_id}")
-                found = True
-                break
-        if found:
-            break
-    if not found:
-        print(f"[edit] Entry {entry_id} not found", file=sys.stderr)
-        sys.exit(1)
+        for item in items:
+            aid = item.get("id", "?")
+            act = item.get("action", category)
+            actions.append(f"- {act}: {aid}")
+
+    if actions:
+        prev_actions: List[str] = []
+        if state_file.exists():
+            for line in state_file.read_text(encoding="utf-8").split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    prev_actions.append(line)
+        all_actions = actions + prev_actions
+        lines.extend(all_actions[:20])
+    else:
+        lines.append("- No actions taken")
+
+    lines.append("")
+    state_file.write_text("\n".join(lines), encoding="utf-8")
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -1178,7 +1485,7 @@ Examples:
             help="Workspace root (overrides global --root)",
         )
 
-    p_init = sub.add_parser("init", help="Initialize learning/self-improving/ structure")
+    p_init = sub.add_parser("init", help="Initialize learning/ structure")
     _add_root(p_init)
     p_init.set_defaults(func=cmd_init)
 
@@ -1192,6 +1499,7 @@ Examples:
     p_search.add_argument("query", nargs="?", help="Search query")
     p_search.add_argument("--limit", "-l", type=int, default=20, help="Result limit")
     p_search.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+    p_search.add_argument("--touch", action="store_true", help="Record matching entries as reused")
     p_search.set_defaults(func=cmd_search)
 
     p_log = sub.add_parser("log", help="Log a learning (backward-compatible)")
@@ -1260,6 +1568,23 @@ Examples:
     p_edit.add_argument("--last-seen", help="New Last-Seen date (YYYY-MM-DD)")
     p_edit.add_argument("--recurrence", type=int, help="New Recurrence-Count")
     p_edit.set_defaults(func=cmd_edit)
+
+    p_export = sub.add_parser("export", help="Export entries as markdown")
+    _add_root(p_export)
+    p_export.add_argument("--output", "-o", default="", help="Output file path (omit for stdout)")
+    p_export.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+    p_export.set_defaults(func=cmd_export)
+
+    p_ingest = sub.add_parser("ingest", help="Ingest content through chunker pipeline")
+    _add_root(p_ingest)
+    p_ingest.add_argument("--kind", "-k", required=True, choices=["chat", "email", "document"],
+                          help="Source kind (determines chunking strategy)")
+    p_ingest.add_argument("--file", "-f", default="", help="File path (omit for stdin)")
+    p_ingest.add_argument("--source-id", default="", help="Stable source id for dedup (default: auto)")
+    p_ingest.add_argument("--title", "-t", default="", help="Content title")
+    p_ingest.add_argument("--tags", default="", help="Comma-separated tags")
+    p_ingest.add_argument("--no-dedup", action="store_true", help="Skip dedup check")
+    p_ingest.set_defaults(func=cmd_ingest)
 
     return parser
 

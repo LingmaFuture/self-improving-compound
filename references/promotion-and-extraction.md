@@ -6,17 +6,17 @@ The `maintain` subcommand enforces the human-like memory lifecycle integrated fr
 
 ### How `maintain` works
 
-1. **Scan** all tiers (HOT, WARM, COLD) and parse entry metadata (`First-Seen`, `Last-Seen`, `Recurrence-Count`, `Status`, `Area`).
+1. **Scan** SQLite chunks in `learning/memory_tree/chunks.db` and read metadata (`First-Seen`, `Last-Seen`, `Recurrence-Count`, `Status`, `Area`, lifecycle status).
 2. **Identify candidates**:
-   - HOT entries unused for 30+ days → recommend demotion to WARM
-   - WARM entries unused for 90+ days → recommend archiving to COLD
-   - Entries with `Recurrence-Count >= 3` or 3 uses within 7 days → flag for promotion toward HOT
+   - `admitted` entries unused for 30+ days → recommend `buffered`
+   - `buffered` entries unused for 90+ days → recommend `sealed`
+   - Entries with `Recurrence-Count >= 3` or repeated searches → flag for project-memory promotion
 3. **Report** in human-readable text or JSON (`--format json`).
 4. **Apply safe moves** only when `--apply` is passed. `--dry-run` is the default.
 
 ### Safety rules
 
-- **Never delete** without explicit user action; archive instead.
+- **Never delete** without explicit user action; update lifecycle status or export/promote instead.
 - **Never guess** when metadata is insufficient; report recommendations.
 - **Preserve confirmed preferences** during compaction; merge or summarize, do not erase.
 - **Keep operations deterministic** so behavior is testable and reproducible.
@@ -64,9 +64,9 @@ Promote a learning when it is:
 
 | Condition | Threshold | Action |
 |---|---|---|
-| HOT -> WARM | 30 days unused | Move to `domains/` or `projects/` |
-| WARM -> COLD | 90 days unused | Move to `archive/` |
-| WARM -> HOT | 3 uses within 7 days | Move to `memory.md` |
+| HOT -> WARM | 30 days unused | Mark `buffered` |
+| WARM -> COLD | 90 days unused | Mark `sealed` |
+| Frequent reuse | 3 uses within 7 days | Promote as a short prevention rule |
 | To AGENTS/SOUL/TOOLS | `Recurrence-Count >= 3` + spans 2+ tasks + within 30 days | Promote as short prevention rule |
 | To skill | Proven + broadly applicable | Extract as skill |
 
@@ -95,7 +95,7 @@ Avoid storing ephemeral or session-specific values that change frequently or bec
 - Connection handles, one-time tokens, or runtime device info
 - "Current" versions or counts that will be wrong on the next run
 
-Volatile context belongs in working memory or session notes, not in `learning/self-improving/`.
+Volatile context belongs in working memory or session notes, not in `learning/`.
 
 ### 3. Index entries are pointers, not duplicates
 The `index.md` Pattern-Key list and any cross-references should act as minimal pointers. They should tell a future reader *that* a pattern exists and *where* to find it, without duplicating the full details. If the index grows into a copy of the entries, it is too verbose.
