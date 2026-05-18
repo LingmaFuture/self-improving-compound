@@ -7,7 +7,7 @@
 ## 核心能力
 
 - **最终回复前捕获可复用经验**：用户纠正、工具/API 坑、非显然失败、workaround、缺失能力。
-- **SQLite 作为执行学习源头**：默认写入 `learning/memory_tree/chunks.db`，支持搜索、去重、生命周期、导出。
+- **SQLite 作为执行学习源头**：默认写入 `learning/memory_tree/chunks.db`，支持搜索、去重、异步 job、生命周期、导出。
 - **事实与教训分层**：事实连续性写入 `memory/YYYY-MM-DD.md`；可复用预防规则写入 `learning/`。
 - **cron 自动审计**：轻量检查、重型审计、每日事实记忆、post-digest workspace steward。
 - **规则逐层沉淀**：稳定规则进入 `skills/`、`AGENTS.md`、`TOOLS.md`、`MEMORY.md` 等长期状态文件。
@@ -35,11 +35,31 @@
 
 Workspace Steward 只能做小而安全的一致性修正：不能重写人格、安全规则，也不能把每日事实堆进根文件。
 
-## 安装
+## 安装：`clawhub install` 只是第一步
+
+`clawhub install` 只会安装文件，不会自动完成自进化系统接线。真正可用至少需要：初始化 `learning/`、写入 capture gate、安装 cron、配置 delivery，必要时配置 hooks 和 daily collector。
 
 ```bash
 clawhub install self-improving-compound
+export OPENCLAW_WORKSPACE="/path/to/workspace"
+export SELF_IMPROVING_SKILL_DIR="$OPENCLAW_WORKSPACE/skills/self-improving-compound"
+export SELF_IMPROVING_LEARNINGS_CLI="$SELF_IMPROVING_SKILL_DIR/scripts/learnings.py"
+python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" init
+python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" status
 ```
+
+完整安装配置流程见 `SKILL.md` 的 **Installation and activation** 部分。
+
+建议 checklist：
+
+1. 安装 skill 文件。
+2. 设置 workspace / skill / CLI 环境变量。
+3. 初始化 `learning/`。
+4. 把 capture gate 写进 `AGENTS.md` 或等价 agent 指令。
+5. 按 `scripts/setup-cron.json` 安装/更新 cron，并配置投递目标。
+6. 可选：配置 `hooks/activator.sh` 和 `hooks/error-detector.sh`。
+7. 可选：配置 `SELF_IMPROVING_DAILY_COLLECTOR` 提升 Daily Memory Digest 质量。
+8. 做 search / log / export / daily-memory / cron list smoke test。
 
 要求：Python 3.8+、bash。本地 CLI 不需要网络访问。
 
@@ -52,9 +72,18 @@ python3 scripts/learnings.py --root /path/to/workspace log-learning \
   --summary "隔离 cron 需要显式拉取 session history" \
   --details "isolated session 不会自动继承主对话上下文。" \
   --pattern cron:session-context
+python3 scripts/learnings.py --root /path/to/workspace process-jobs
 python3 scripts/learnings.py --root /path/to/workspace maintain --apply
 bash scripts/learning-export.sh
 ```
+
+长期运行时可启动本地 worker：
+
+```bash
+python3 scripts/learnings.py --root /path/to/workspace process-jobs --daemon --max-jobs 0
+```
+
+worker 会消费 `mem_tree_jobs`，生成 tree buffer/summary，并以 `maintain_lifecycle` job 执行 HOT/WARM/COLD 自动维护。
 
 ## 推荐 cron 管线
 

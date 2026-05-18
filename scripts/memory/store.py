@@ -589,15 +589,39 @@ class MemoryStore:
                     time_range_end_ms, created_at_ms, sealed_at_ms, deleted
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
+                    tree_id = excluded.tree_id,
+                    tree_level = excluded.tree_level,
+                    parent_id = excluded.parent_id,
                     content = excluded.content,
                     token_count = excluded.token_count,
                     chunk_count = excluded.chunk_count,
+                    time_range_start_ms = excluded.time_range_start_ms,
+                    time_range_end_ms = excluded.time_range_end_ms,
                     sealed_at_ms = excluded.sealed_at_ms,
                     deleted = excluded.deleted""",
                 (s.id, s.tree_id, s.tree_level, s.parent_id, s.content,
                  s.token_count, s.chunk_count, s.time_range_start_ms,
                  s.time_range_end_ms, s.created_at_ms, s.sealed_at_ms, s.deleted),
             )
+
+    def list_summaries(
+        self, tree_id: Optional[str] = None, tree_level: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict]:
+        conditions = ["deleted = 0"]
+        params: List = []
+        if tree_id is not None:
+            conditions.append("tree_id = ?")
+            params.append(tree_id)
+        if tree_level is not None:
+            conditions.append("tree_level = ?")
+            params.append(tree_level)
+
+        sql = "SELECT * FROM mem_tree_summaries WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY created_at_ms DESC LIMIT ?"
+        params.append(limit)
+        with self._tx() as conn:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     # -- buffers --------------------------------------------------------------
 
@@ -616,6 +640,25 @@ class MemoryStore:
                 (tree_id, chunk_id, seq, content, token_count,
                  oldest_ts_ms, newest_ts_ms, now),
             )
+
+    def list_buffers(self, tree_id: Optional[str] = None, limit: int = 100) -> List[Dict]:
+        with self._tx() as conn:
+            if tree_id:
+                rows = conn.execute(
+                    """SELECT * FROM mem_tree_buffers
+                       WHERE tree_id = ?
+                       ORDER BY seq_in_tree, inserted_at_ms
+                       LIMIT ?""",
+                    (tree_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT * FROM mem_tree_buffers
+                       ORDER BY inserted_at_ms DESC
+                       LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+            return [dict(r) for r in rows]
 
     # -- entity hotness -------------------------------------------------------
 
@@ -703,10 +746,56 @@ class MemoryStore:
                 return None
             job = dict(row)
             conn.execute(
-                "UPDATE mem_tree_jobs SET status = 'running', started_at_ms = ? WHERE id = ?",
+                """UPDATE mem_tree_jobs
+                      SET status = 'running', started_at_ms = ?, error = NULL
+                    WHERE id = ? AND status = 'pending'""",
                 (_now_ms(), job["id"]),
             )
             return job
+
+    def complete_job(self, job_id: int) -> None:
+        """Mark a claimed job completed."""
+        with self._tx() as conn:
+            conn.execute(
+                """UPDATE mem_tree_jobs
+                      SET status = 'completed', completed_at_ms = ?, error = NULL
+                    WHERE id = ?""",
+                (_now_ms(), job_id),
+            )
+
+    def fail_job(self, job_id: int, error: str, retry_delay_ms: int = 60000) -> None:
+        """Record a job failure and reschedule it until max_retries is exhausted."""
+        now = _now_ms()
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT retry_count, max_retries FROM mem_tree_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if not row:
+                return
+            retry_count = int(row["retry_count"]) + 1
+            max_retries = int(row["max_retries"])
+            if retry_count <= max_retries:
+                conn.execute(
+                    """UPDATE mem_tree_jobs
+                          SET status = 'pending',
+                              retry_count = ?,
+                              scheduled_at_ms = ?,
+                              completed_at_ms = NULL,
+                              error = ?
+                        WHERE id = ?""",
+                    (retry_count, now + retry_delay_ms, error[:1000], job_id),
+                )
+            else:
+                conn.execute(
+                    """UPDATE mem_tree_jobs
+                          SET status = 'failed',
+                              retry_count = ?,
+                              completed_at_ms = ?,
+                              error = ?
+                        WHERE id = ?""",
+                    (retry_count, now, error[:1000], job_id),
+                )
 
     def count_jobs(self, status: Optional[str] = None) -> int:
         """Count jobs without mutating queue state."""
@@ -717,6 +806,32 @@ class MemoryStore:
                 "SELECT COUNT(*) FROM mem_tree_jobs WHERE status = ?",
                 (status,),
             ).fetchone()[0]
+
+    def count_jobs_by_kind(self, kind: str, status: Optional[str] = None) -> int:
+        """Count jobs for a kind without mutating queue state."""
+        with self._tx() as conn:
+            if status is None:
+                return conn.execute(
+                    "SELECT COUNT(*) FROM mem_tree_jobs WHERE kind = ?",
+                    (kind,),
+                ).fetchone()[0]
+            return conn.execute(
+                "SELECT COUNT(*) FROM mem_tree_jobs WHERE kind = ? AND status = ?",
+                (kind, status),
+            ).fetchone()[0]
+
+    def job_status_counts(self) -> Dict[str, int]:
+        """Return queue counts grouped by status."""
+        with self._tx() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM mem_tree_jobs GROUP BY status"
+            ).fetchall()
+            return {str(r["status"]): int(r["n"]) for r in rows}
+
+    def get_job(self, job_id: int) -> Optional[Dict]:
+        with self._tx() as conn:
+            row = conn.execute("SELECT * FROM mem_tree_jobs WHERE id = ?", (job_id,)).fetchone()
+            return dict(row) if row else None
 
     # -- ingested-sources dedup -----------------------------------------------
 

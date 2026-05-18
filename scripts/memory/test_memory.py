@@ -162,6 +162,22 @@ class TestStoreSchema(unittest.TestCase):
         assert self.store.count_jobs(status="pending") == 0
         assert self.store.count_jobs(status="running") == 1
 
+        self.store.complete_job(claimed["id"])
+        assert self.store.count_jobs(status="running") == 0
+        assert self.store.count_jobs(status="completed") == 1
+
+    def test_job_failure_retries_then_fails(self):
+        job_id = self.store.enqueue_job(MemoryStore.JobRow(
+            kind="test_job", payload_json="{}", max_retries=0,
+        ))
+        claimed = self.store.claim_next_job()
+        assert claimed is not None
+        self.store.fail_job(claimed["id"], "boom", retry_delay_ms=0)
+        got = self.store.get_job(job_id)
+        assert got is not None
+        assert got["status"] == "failed"
+        assert "boom" in got["error"]
+
     def test_chunk_lifecycle(self):
         ts = datetime.datetime(2026, 5, 17, tzinfo=datetime.timezone.utc)
         meta = Metadata.point_in_time(SourceKind.CHAT, "chan-1", "user1", ts)

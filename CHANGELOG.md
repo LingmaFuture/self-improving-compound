@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.2.2 - 2026-05-18
+
+- Expanded `SKILL.md` with a full installation and activation flow: root/env setup, learning-store initialization, capture gate, cron pipeline, hooks, optional daily collector, smoke tests, and common failure fixes.
+- Clarified that `clawhub install` only copies files and is not a complete self-improving-system installation.
+- Added concise install checklists to English and Chinese READMEs.
+
+
 ## 6.2.1 - 2026-05-18
 
 - Clarified the 3+7 co-evolution model: 3 state directories (`memory/`, `learning/`, `skills/`) plus 7 root Markdown control-plane files (`AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `TOOLS.md`, `USER.md`).

@@ -3,7 +3,7 @@ name: self-improving-compound
 description: "Agent memory and self-improvement system. Replaces naive file-based agent memory with a structured SQLite learning engine: capture corrections, errors, and reusable lessons during active work, audit session history for missed learnings via isolated cron jobs, and promote proven rules into skills and agent instructions. 3+7 co-evolution model — 3 state directories (`memory/`, `learning/`, `skills/`) plus 7 root Markdown control-plane files (`AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `TOOLS.md`, `USER.md`) improve together. Adds daily factual memory and workspace stewardship loops. Python 3.8+ CLI with bash hooks. Use for: logging non-obvious failures, user corrections, tool/API gotchas, or missing capabilities before the final reply. Use for: setting up automated cron-based audit pipelines that catch what real-time capture misses. Do not use for trivial typos or routine noise."
 compatibility: "Portable Agent Skills format. Core workflow is agent-agnostic. Bundled helpers require Python 3.8+; hook helpers require bash. No network access is required."
 metadata:
-  version: "6.2.1"
+  version: "6.2.2"
   original_slug: "self-improving-compound"
   category: "memory-system"
   author: "Hybrid adaptation from actual-self-improvement, self-improving-compound, OpenHuman memory-tree, and Hermes Agent architecture | Contact: rockwaychen@gmail.com | GitHub: LingmaFuture"
@@ -20,6 +20,175 @@ The system runs as four layers:
 - **Layer 4 — Promotion + stewardship**: proven rules flow from `learning/` SQLite → `skills/` SKILL.md → the 7 root Markdown control-plane files (`AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `TOOLS.md`, `USER.md`). The full 3+7 system co-evolves.
 
 **Author:** Rockway Chen · [rockwaychen@gmail.com](mailto:rockwaychen@gmail.com) · [GitHub: LingmaFuture](https://github.com/LingmaFuture)
+
+## Installation and activation — `clawhub install` is only step 1
+
+A raw ClawHub install only copies the skill files. It does **not** automatically wire the agent into a self-improving operating loop.
+
+Use this maturity ladder:
+
+| Level | What is configured | Result |
+|---|---|---|
+| 1/5 | `clawhub install self-improving-compound` | Files are present; almost no behavior changes yet. |
+| 2/5 | `learning/` initialized and CLI verified | Manual logging/search works. |
+| 3/5 | Capture gate added to agent instructions | The agent remembers to log lessons before final replies. |
+| 4/5 | Cron jobs installed and delivery configured | Missed lessons, failures, daily memory, and steward checks run automatically. |
+| 5/5 | Hooks/env/collector verified | Activation reminders, error capture, path resolution, and daily factual memory are reliable. |
+
+### Phase 0 — Identify roots
+
+You must distinguish two roots:
+
+```bash
+# Workspace root: where memory/, learning/, AGENTS.md, etc. live
+export OPENCLAW_WORKSPACE="/path/to/workspace"
+
+# Skill root: where this skill was installed
+export SELF_IMPROVING_SKILL_DIR="$OPENCLAW_WORKSPACE/skills/self-improving-compound"
+export SELF_IMPROVING_LEARNINGS_CLI="$SELF_IMPROVING_SKILL_DIR/scripts/learnings.py"
+```
+
+For OpenClaw's default workspace this is usually:
+
+```bash
+export OPENCLAW_WORKSPACE="$HOME/.openclaw/workspace"
+export SELF_IMPROVING_SKILL_DIR="$OPENCLAW_WORKSPACE/skills/self-improving-compound"
+export SELF_IMPROVING_LEARNINGS_CLI="$SELF_IMPROVING_SKILL_DIR/scripts/learnings.py"
+```
+
+Do not write durable learnings into the skill directory. `learning/` belongs under the workspace root.
+
+### Phase 1 — Install files
+
+```bash
+clawhub install self-improving-compound
+cd "$SELF_IMPROVING_SKILL_DIR"
+chmod +x scripts/*.py scripts/*.sh hooks/*.sh 2>/dev/null || true
+```
+
+If the skill is copied manually, set `SELF_IMPROVING_SKILL_DIR` to the copied directory.
+
+### Phase 2 — Initialize and verify the learning store
+
+```bash
+python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" init
+python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" status
+python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" search "install smoke test" --limit 3
+```
+
+Expected result:
+
+- `learning/memory_tree/chunks.db` exists.
+- `status` exits successfully.
+- `search` works even when there are no results.
+
+### Phase 3 — Add the capture gate to agent instructions
+
+Add a compact rule to the agent's durable instruction file, usually `AGENTS.md`:
+
+```markdown
+## Self-improvement capture gate
+
+Before the final reply after any non-trivial task, check whether the work involved a user correction, non-obvious failure, tool/API quirk, workaround, format mismatch, missing capability, or reusable convention.
+
+If yes:
+1. Search existing learnings first:
+   `python3 $SELF_IMPROVING_LEARNINGS_CLI --root $OPENCLAW_WORKSPACE search "<keywords>" --limit 5`
+2. If no suitable entry exists, log the durable lesson with `log-correction`, `log-error`, `log-learning`, or `log-feature`.
+3. Keep entries compact, prevention-oriented, and secret-free.
+```
+
+Without this phase the skill remains mostly passive; the agent will not consistently capture lessons in real time.
+
+### Phase 4 — Install the cron pipeline
+
+Cron installation is not automatic. The templates live in `scripts/setup-cron.json`; agent-facing instructions live in `scripts/setup-cron-agent.md`.
+
+Recommended OpenClaw flow:
+
+1. Ask the agent: "Install the self-improving compound cron jobs using `scripts/setup-cron.json`. Check existing jobs first and update instead of duplicating."
+2. Configure delivery for your channel, e.g. Telegram or Feishu.
+3. Verify with `cron list`.
+
+The pipeline normally includes:
+
+| Job | Purpose |
+|---|---|
+| Self-Improving Light Check | Frequent lightweight scan for missed corrections, errors, and blockers. |
+| Learning Audit Heavy | System/cron failure audit, `learning-audit.py --log`, lifecycle maintenance. |
+| Daily Memory Digest | Writes `memory/YYYY-MM-DD.md` factual continuity notes and extracts reusable lessons. |
+| Daily Workspace Steward | Exports `learning/`, checks `skills/`, and inspects the 7 root Markdown control-plane files. |
+
+Important cron requirements:
+
+- Set `schedule.tz` to the user's actual timezone.
+- Set or infer `delivery.channel` and `delivery.to`; otherwise reports may not reach the user.
+- Use `cron update` for existing jobs; do not create duplicates.
+- Isolated cron sessions do not inherit main chat context. Jobs that need conversation context must use `sessions_list` / `sessions_history` or an explicit collector.
+
+### Phase 5 — Configure optional hooks
+
+Hooks are optional but improve activation. They are runtime-specific.
+
+Dry-run the bundled hooks first:
+
+```bash
+"$SELF_IMPROVING_SKILL_DIR/hooks/activator.sh" "install smoke test" || true
+"$SELF_IMPROVING_SKILL_DIR/hooks/error-detector.sh" "install" "smoke test" || true
+```
+
+If your client supports command hooks, wire:
+
+- `hooks/activator.sh` as a pre-prompt / prompt-start reminder.
+- `hooks/error-detector.sh` as a post-error / failed-command reminder.
+
+If your runtime has no hook system, skip this phase and rely on the capture gate plus cron. Do not invent config keys; use your runtime's documented hook mechanism.
+
+### Phase 6 — Configure optional daily-memory collector
+
+`Daily Memory Digest` can use a local collector if your runtime has one:
+
+```bash
+export SELF_IMPROVING_DAILY_COLLECTOR="python3 /path/to/collector.py"
+bash "$SELF_IMPROVING_SKILL_DIR/scripts/daily-memory.sh" --root "$OPENCLAW_WORKSPACE"
+```
+
+If no collector is configured, the helper prints the target note contract and the agent must gather context with available runtime tools.
+
+### Phase 7 — End-to-end smoke test
+
+Run this checklist after installation:
+
+```bash
+python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" log-learning \
+  --summary "Self-improving install smoke test" \
+  --details "Temporary entry to verify logging path; mark resolved or delete if desired." \
+  --pattern "install:smoke-test" \
+  --area "domain:setup"
+
+python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" search "install smoke test" --limit 5
+bash "$SELF_IMPROVING_SKILL_DIR/scripts/learning-export.sh"
+bash "$SELF_IMPROVING_SKILL_DIR/scripts/daily-memory.sh" --root "$OPENCLAW_WORKSPACE" --date "$(TZ=Asia/Shanghai date +%F)"
+```
+
+Then verify:
+
+- `learning/memory-export.md` exists.
+- `learning/status.json` exists.
+- `memory/YYYY-MM-DD.md` target is clear if daily memory is enabled.
+- `cron list` shows the expected enabled jobs with `nextRunAtMs`.
+- Delivery target is configured for cron job summaries.
+
+### Common install failures
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `clawhub install` succeeded but nothing changes | Capture gate and cron not configured | Complete phases 3-4. |
+| Cron runs but finds no conversation context | Isolated session has no main history | Use `sessions_list` / `sessions_history` or a collector. |
+| Learnings appear under the skill directory | Wrong `--root` | Set `OPENCLAW_WORKSPACE`; always pass `--root`. |
+| Cron summaries disappear | `delivery` missing channel/recipient | Set `delivery.channel` + `delivery.to`. |
+| Daily memory is generic or empty | No collector/context source | Configure `SELF_IMPROVING_DAILY_COLLECTOR` or improve the cron prompt. |
+| Duplicate cron jobs | Setup re-run without idempotency check | `cron list` first; update by job name. |
 
 ## 3+7 co-evolution model
 

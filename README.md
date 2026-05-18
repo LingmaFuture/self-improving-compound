@@ -40,7 +40,12 @@ The steward loop should make only small, safe consistency updates across these f
 Real-time capture gate
   -> search existing SQLite learnings
   -> log compact correction/error/learning/feature entries
-  -> maintain HOT/WARM/COLD lifecycle
+  -> enqueue async memory jobs
+
+Memory job worker
+  -> process chunk extraction jobs
+  -> update scores, tree buffers, and tree summaries
+  -> run HOT/WARM/COLD lifecycle maintenance
 
 Daily factual memory
   -> write memory/YYYY-MM-DD.md
@@ -52,13 +57,32 @@ Workspace stewardship
   -> make only small safe consistency updates
 ```
 
-## Install
+## Install: files are only step 1
+
+`clawhub install` only installs the skill files. A useful setup requires activation.
 
 ```bash
 clawhub install self-improving-compound
+export OPENCLAW_WORKSPACE="/path/to/workspace"
+export SELF_IMPROVING_SKILL_DIR="$OPENCLAW_WORKSPACE/skills/self-improving-compound"
+export SELF_IMPROVING_LEARNINGS_CLI="$SELF_IMPROVING_SKILL_DIR/scripts/learnings.py"
+chmod +x "$SELF_IMPROVING_SKILL_DIR"/scripts/*.py "$SELF_IMPROVING_SKILL_DIR"/scripts/*.sh "$SELF_IMPROVING_SKILL_DIR"/hooks/*.sh 2>/dev/null || true
+python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" init
+python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" status
 ```
 
-Or copy this directory into your skills location.
+Full activation checklist:
+
+1. Install files with ClawHub or copy the skill directory.
+2. Set `OPENCLAW_WORKSPACE`, `SELF_IMPROVING_SKILL_DIR`, and optionally `SELF_IMPROVING_LEARNINGS_CLI`.
+3. Initialize `learning/` with `learnings.py init`.
+4. Add the capture gate to `AGENTS.md` or equivalent agent instructions.
+5. Install/update cron jobs from `scripts/setup-cron.json` and configure delivery.
+6. Optionally wire `hooks/activator.sh` and `hooks/error-detector.sh`.
+7. Optionally configure `SELF_IMPROVING_DAILY_COLLECTOR` for high-quality daily memory.
+8. Run smoke tests: search/log/export/daily-memory helper + `cron list`.
+
+See `SKILL.md` for the detailed installation and activation flow.
 
 Requirements:
 
@@ -90,6 +114,10 @@ python3 scripts/learnings.py --root /path/to/workspace log-learning \
 # Review and maintain lifecycle
 python3 scripts/learnings.py --root /path/to/workspace status
 python3 scripts/learnings.py --root /path/to/workspace maintain --apply
+
+# Process async memory jobs once, or keep a local daemon running
+python3 scripts/learnings.py --root /path/to/workspace process-jobs
+python3 scripts/learnings.py --root /path/to/workspace process-jobs --daemon --max-jobs 0
 
 # Export for review
 bash scripts/learning-export.sh
@@ -134,6 +162,7 @@ python3 scripts/learnings.py --root /path/to/workspace search "keyword" --limit 
 python3 scripts/learnings.py --root /path/to/workspace search "keyword" --touch
 python3 scripts/learnings.py --root /path/to/workspace log-error --summary "..." --details "..." --pattern area:stable-key
 python3 scripts/learnings.py --root /path/to/workspace log-feature --summary "..." --details "..." --pattern feature:stable-key
+python3 scripts/learnings.py --root /path/to/workspace process-jobs --format json
 python3 scripts/learnings.py --root /path/to/workspace maintain --apply
 python3 scripts/learnings.py --root /path/to/workspace promote LRN-YYYYMMDD-001 --to AGENTS.md
 bash scripts/daily-memory.sh --root /path/to/workspace

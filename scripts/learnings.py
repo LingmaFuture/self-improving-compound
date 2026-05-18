@@ -20,6 +20,7 @@ Commands:
   log-learning    Log a learning
   log-error       Log an error
   log-feature     Log a feature request
+  process-jobs    Run queued async memory jobs
   maintain        Review and maintain memory lifecycle
   edit            Edit entry metadata
   promote         Promote entry to a target memory file
@@ -40,6 +41,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -522,6 +524,211 @@ def _update_hotness(store: MemoryStore, chunk: Chunk, pattern_key: str) -> None:
     )
 
 
+def _chunk_tree_route(chunk: Chunk) -> Dict[str, str]:
+    """Return the deterministic summary tree for a chunk."""
+    for tag in chunk.metadata.tags:
+        if tag.startswith("area:"):
+            area = tag.split(":", 1)[1]
+            return {"tree_id": f"area:{area}", "tree_type": "area"}
+    for tag in chunk.metadata.tags:
+        if tag.startswith("pattern-key:"):
+            pk = tag.split(":", 1)[1]
+            return {"tree_id": f"pattern-key:{pk}", "tree_type": "pattern_key"}
+    return {
+        "tree_id": f"source:{chunk.metadata.source_kind.as_str()}:{chunk.metadata.source_id}",
+        "tree_type": "source",
+    }
+
+
+def _chunk_summary_text(chunk: Chunk, max_chars: int = 280) -> str:
+    summary_match = re.search(r"\*\*Summary\*\*:\s*(.+)", chunk.content)
+    if summary_match:
+        text = summary_match.group(1)
+    else:
+        lines = [line.strip("# ").strip() for line in chunk.content.splitlines() if line.strip()]
+        text = lines[0] if lines else chunk.content
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_chars:
+        return text[: max_chars - 3].rstrip() + "..."
+    return text
+
+
+def _summary_id(tree_id: str, level: int, key: str) -> str:
+    digest = hashlib.sha256(f"{tree_id}\0{level}\0{key}".encode("utf-8")).hexdigest()[:24]
+    return f"sum:{level}:{digest}"
+
+
+def _maintenance_plan(store: MemoryStore) -> Dict[str, List[Dict[str, Any]]]:
+    all_chunks = store.list_chunks(ListChunksQuery(limit=10000))
+    now = get_now()
+
+    stale_hot: List[Dict[str, Any]] = []
+    stale_warm: List[Dict[str, Any]] = []
+    promote_candidates: List[Dict[str, Any]] = []
+    insufficient_metadata: List[Dict[str, Any]] = []
+
+    for c in all_chunks:
+        last_seen = _extract_last_seen(c)
+        days_stale = (now - last_seen).days
+        lifecycle = store.get_chunk_lifecycle(c.id) or CHUNK_STATUS_ADMITTED
+        rc = _extract_recurrence_count(c)
+        entry_id = _extract_entry_id(c)
+
+        if lifecycle == CHUNK_STATUS_BUFFERED and days_stale >= 90:
+            stale_warm.append({
+                "id": entry_id,
+                "chunk_id": c.id,
+                "last_seen": last_seen.strftime("%Y-%m-%d"),
+                "days_stale": days_stale,
+                "target": "archive/",
+            })
+        elif lifecycle == CHUNK_STATUS_ADMITTED and days_stale >= 30:
+            stale_hot.append({
+                "id": entry_id,
+                "chunk_id": c.id,
+                "last_seen": last_seen.strftime("%Y-%m-%d"),
+                "days_stale": days_stale,
+                "target": "warm",
+            })
+
+        if rc >= 3:
+            promote_candidates.append({
+                "id": entry_id,
+                "chunk_id": c.id,
+                "recurrence_count": rc,
+            })
+
+    return {
+        "stale_hot": stale_hot,
+        "stale_warm": stale_warm,
+        "promote_candidates": promote_candidates,
+        "insufficient_metadata": insufficient_metadata,
+    }
+
+
+def _apply_maintenance_plan(store: MemoryStore, plan: Dict[str, List[Dict[str, Any]]]) -> None:
+    for r in plan["stale_hot"]:
+        store.set_chunk_lifecycle(r["chunk_id"], CHUNK_STATUS_BUFFERED)
+    for r in plan["stale_warm"]:
+        store.set_chunk_lifecycle(r["chunk_id"], CHUNK_STATUS_SEALED)
+
+
+def _process_extract_chunk_job(store: MemoryStore, payload: Dict[str, Any]) -> Dict[str, Any]:
+    chunk_id_value = str(payload.get("chunk_id") or "")
+    if not chunk_id_value:
+        raise ValueError("extract_chunk payload missing chunk_id")
+    chunk = store.get_chunk(chunk_id_value)
+    if chunk is None:
+        raise ValueError(f"chunk not found: {chunk_id_value}")
+
+    score = _compute_entry_score(chunk)
+    store.upsert_scores([score])
+
+    lifecycle = store.get_chunk_lifecycle(chunk.id)
+    if lifecycle in (None, CHUNK_STATUS_PENDING_EXTRACTION):
+        store.set_chunk_lifecycle(chunk.id, CHUNK_STATUS_ADMITTED)
+
+    route = _chunk_tree_route(chunk)
+    tree_id = route["tree_id"]
+    now_ms = int(get_now().timestamp() * 1000)
+    summary_text = _chunk_summary_text(chunk)
+    root_id = _summary_id(tree_id, 1, "root")
+
+    store.upsert_tree(
+        tree_id=tree_id,
+        root_id=root_id,
+        status="open",
+        tree_type=route["tree_type"],
+        owner=chunk.metadata.owner,
+        created_at_ms=now_ms,
+    )
+    store.append_buffer(
+        tree_id=tree_id,
+        chunk_id=chunk.id,
+        seq=chunk.seq_in_source,
+        content=summary_text,
+        token_count=approx_token_count(summary_text),
+        oldest_ts_ms=int(chunk.metadata.time_range[0].timestamp() * 1000),
+        newest_ts_ms=int(chunk.metadata.time_range[1].timestamp() * 1000),
+    )
+
+    store.upsert_summary(MemoryStore.SummaryRow(
+        id=_summary_id(tree_id, 0, chunk.id),
+        tree_id=tree_id,
+        tree_level=0,
+        parent_id=root_id,
+        content=summary_text,
+        token_count=approx_token_count(summary_text),
+        chunk_count=1,
+        time_range_start_ms=int(chunk.metadata.time_range[0].timestamp() * 1000),
+        time_range_end_ms=int(chunk.metadata.time_range[1].timestamp() * 1000),
+        created_at_ms=now_ms,
+        sealed_at_ms=now_ms,
+    ))
+
+    buffers = store.list_buffers(tree_id=tree_id, limit=20)
+    rolling_lines = [f"- {b['content']}" for b in buffers[:20] if b.get("content")]
+    rolling_content = "\n".join(rolling_lines) if rolling_lines else summary_text
+    store.upsert_summary(MemoryStore.SummaryRow(
+        id=root_id,
+        tree_id=tree_id,
+        tree_level=1,
+        content=rolling_content,
+        token_count=approx_token_count(rolling_content),
+        chunk_count=len(buffers),
+        time_range_start_ms=min(int(b["oldest_timestamp_ms"]) for b in buffers) if buffers else None,
+        time_range_end_ms=max(int(b["newest_timestamp_ms"]) for b in buffers) if buffers else None,
+        created_at_ms=now_ms,
+    ))
+
+    return {"chunk_id": chunk.id, "tree_id": tree_id, "summary": summary_text}
+
+
+def _process_lifecycle_job(
+    store: MemoryStore,
+    base_dir: Path,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    plan = _maintenance_plan(store)
+    if not dry_run:
+        _apply_maintenance_plan(store, plan)
+    _update_heartbeat_state(base_dir, plan, dry_run)
+    return {
+        "stale_hot": len(plan["stale_hot"]),
+        "stale_warm": len(plan["stale_warm"]),
+        "promote_candidates": len(plan["promote_candidates"]),
+        "dry_run": dry_run,
+    }
+
+
+def _process_job(store: MemoryStore, base_dir: Path, job: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        payload = json.loads(job.get("payload_json") or "{}")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"invalid payload_json: {e}") from e
+
+    kind = job["kind"]
+    if kind == "extract_chunk":
+        return _process_extract_chunk_job(store, payload)
+    if kind == "maintain_lifecycle":
+        return _process_lifecycle_job(store, base_dir, dry_run=bool(payload.get("dry_run", False)))
+    raise ValueError(f"unknown job kind: {kind}")
+
+
+def _ensure_lifecycle_job(store: MemoryStore) -> None:
+    active = (
+        store.count_jobs_by_kind("maintain_lifecycle", "pending")
+        + store.count_jobs_by_kind("maintain_lifecycle", "running")
+    )
+    if active == 0:
+        store.enqueue_job(MemoryStore.JobRow(
+            kind="maintain_lifecycle",
+            payload_json=json.dumps({"dry_run": False}),
+            priority=-50,
+            max_retries=1,
+        ))
+
+
 def _ingest_entry(
     store: MemoryStore,
     entry_type: str,
@@ -588,6 +795,16 @@ def _ingest_entry(
                 timestamp_ms=now_ms,
             ),
         ])
+
+    store.enqueue_job(MemoryStore.JobRow(
+        kind="extract_chunk",
+        payload_json=json.dumps({
+            "chunk_id": chunk.id,
+            "source_kind": source_kind.as_str(),
+            "source_id": source_id,
+        }),
+        priority=0,
+    ))
 
     return entry_id
 
@@ -1115,76 +1332,24 @@ def cmd_maintain(args: argparse.Namespace) -> None:
 
     store = get_store(resolve_root(args))
     with store:
-        all_chunks = store.list_chunks(ListChunksQuery(limit=10000))
-        now = get_now()
-
-        stale_hot: List[Dict[str, Any]] = []
-        stale_warm: List[Dict[str, Any]] = []
-        promote_candidates: List[Dict[str, Any]] = []
-        insufficient_metadata: List[Dict[str, Any]] = []
-
-        for c in all_chunks:
-            last_seen = _extract_last_seen(c)
-            days_stale = (now - last_seen).days
-            lifecycle = store.get_chunk_lifecycle(c.id) or CHUNK_STATUS_ADMITTED
-
-            # Recurrence is entry metadata, not a derived score signal.
-            rc = _extract_recurrence_count(c)
-
-            entry_id = _extract_entry_id(c)
-
-            # Staleness logic
-            if lifecycle == CHUNK_STATUS_BUFFERED and days_stale >= 90:
-                stale_warm.append({
-                    "id": entry_id,
-                    "chunk_id": c.id,
-                    "last_seen": last_seen.strftime("%Y-%m-%d"),
-                    "days_stale": days_stale,
-                    "target": "archive/",
-                })
-            elif lifecycle == CHUNK_STATUS_ADMITTED and days_stale >= 30:
-                stale_hot.append({
-                    "id": entry_id,
-                    "chunk_id": c.id,
-                    "last_seen": last_seen.strftime("%Y-%m-%d"),
-                    "days_stale": days_stale,
-                    "target": "warm",
-                })
-
-            # Promotion criteria
-            if rc >= 3:
-                promote_candidates.append({
-                    "id": entry_id,
-                    "chunk_id": c.id,
-                    "recurrence_count": rc,
-                })
-
+        results = _maintenance_plan(store)
         if not dry_run:
-            for r in stale_hot:
-                store.set_chunk_lifecycle(r["chunk_id"], CHUNK_STATUS_BUFFERED)
-            for r in stale_warm:
-                store.set_chunk_lifecycle(r["chunk_id"], CHUNK_STATUS_SEALED)
+            _apply_maintenance_plan(store, results)
 
-        results = {
-            "stale_hot": stale_hot,
-            "stale_warm": stale_warm,
-            "promote_candidates": promote_candidates,
-            "insufficient_metadata": insufficient_metadata,
-        }
         _update_heartbeat_state(base_dir, results, dry_run)
 
         if fmt == "json":
             print(json.dumps({
                 "stale_hot": [
                     {"id": r["id"], "days_stale": r["days_stale"], "action": "HOT_TO_WARM"}
-                    for r in stale_hot
+                    for r in results["stale_hot"]
                 ],
                 "stale_warm": [
                     {"id": r["id"], "days_stale": r["days_stale"], "action": "WARM_TO_COLD"}
-                    for r in stale_warm
+                    for r in results["stale_warm"]
                 ],
-                "promote_candidates": promote_candidates,
-                "insufficient_metadata": insufficient_metadata,
+                "promote_candidates": results["promote_candidates"],
+                "insufficient_metadata": results["insufficient_metadata"],
             }, indent=2))
             return
 
@@ -1193,6 +1358,10 @@ def cmd_maintain(args: argparse.Namespace) -> None:
         else:
             print("[maintain] APPLYING changes")
 
+        stale_hot = results["stale_hot"]
+        stale_warm = results["stale_warm"]
+        promote_candidates = results["promote_candidates"]
+        insufficient_metadata = results["insufficient_metadata"]
         has_any = bool(stale_hot or stale_warm or promote_candidates or insufficient_metadata)
 
         if fmt == "text":
@@ -1362,6 +1531,97 @@ def cmd_ingest(args: argparse.Namespace) -> None:
             print(f"  {cid}")
         if len(result.chunk_ids) > 5:
             print(f"  ... and {len(result.chunk_ids) - 5} more")
+
+
+def cmd_process_jobs(args: argparse.Namespace) -> None:
+    """Run the SQLite-backed memory job worker."""
+    base_dir = get_base_dir(resolve_root(args))
+    ensure_structure(base_dir)
+
+    fmt = getattr(args, "format", "text") or "text"
+    daemon = bool(getattr(args, "daemon", False))
+    max_jobs = int(getattr(args, "max_jobs", 100) or 0)
+    idle_sleep = float(getattr(args, "idle_sleep", 5.0) or 0.1)
+    maintenance_interval_ms = int(float(getattr(args, "maintenance_interval_seconds", 86400)) * 1000)
+    kinds_text = getattr(args, "kinds", "") or ""
+    kinds = [k.strip() for k in kinds_text.split(",") if k.strip()] or None
+    include_maintenance = not bool(getattr(args, "no_maintenance", False))
+
+    processed = 0
+    completed = 0
+    failed = 0
+    results: List[Dict[str, Any]] = []
+
+    store = get_store(resolve_root(args))
+    try:
+        with store:
+            if include_maintenance and (kinds is None or "maintain_lifecycle" in kinds):
+                _ensure_lifecycle_job(store)
+
+            while True:
+                if max_jobs > 0 and processed >= max_jobs:
+                    break
+
+                job = store.claim_next_job(kinds=kinds)
+                if job is None:
+                    if not daemon:
+                        break
+                    time.sleep(max(0.1, idle_sleep))
+                    if include_maintenance and (kinds is None or "maintain_lifecycle" in kinds):
+                        _ensure_lifecycle_job(store)
+                    continue
+
+                processed += 1
+                item: Dict[str, Any] = {
+                    "id": job["id"],
+                    "kind": job["kind"],
+                    "status": "completed",
+                }
+                try:
+                    item["result"] = _process_job(store, base_dir, job)
+                    store.complete_job(int(job["id"]))
+                    completed += 1
+                    if daemon and job["kind"] == "maintain_lifecycle":
+                        store.enqueue_job(MemoryStore.JobRow(
+                            kind="maintain_lifecycle",
+                            payload_json=json.dumps({"dry_run": False}),
+                            priority=-50,
+                            max_retries=1,
+                            scheduled_at_ms=int(get_now().timestamp() * 1000) + maintenance_interval_ms,
+                        ))
+                except Exception as e:
+                    item["status"] = "failed"
+                    item["error"] = str(e)
+                    store.fail_job(int(job["id"]), str(e))
+                    failed += 1
+                results.append(item)
+
+    except KeyboardInterrupt:
+        pass
+
+    with store:
+        queue = store.job_status_counts()
+
+    if fmt == "json":
+        print(json.dumps({
+            "processed": processed,
+            "completed": completed,
+            "failed": failed,
+            "queue": queue,
+            "jobs": results,
+        }, indent=2, default=str))
+        return
+
+    print(f"[process-jobs] processed={processed} completed={completed} failed={failed}")
+    if queue:
+        print("[process-jobs] queue:")
+        for status, count in sorted(queue.items()):
+            print(f"  {status}: {count}")
+    for item in results[:10]:
+        suffix = ""
+        if item.get("error"):
+            suffix = f" error={item['error']}"
+        print(f"  - #{item['id']} {item['kind']} {item['status']}{suffix}")
 
 
 def cmd_edit(args: argparse.Namespace) -> None:
@@ -1589,6 +1849,18 @@ Examples:
     p_ingest.add_argument("--tags", default="", help="Comma-separated tags")
     p_ingest.add_argument("--no-dedup", action="store_true", help="Skip dedup check")
     p_ingest.set_defaults(func=cmd_ingest)
+
+    p_jobs = sub.add_parser("process-jobs", help="Run queued async memory jobs")
+    _add_root(p_jobs)
+    p_jobs.add_argument("--max-jobs", type=int, default=100, help="Maximum jobs to process (0 = unlimited)")
+    p_jobs.add_argument("--daemon", action="store_true", help="Keep polling for due jobs until interrupted")
+    p_jobs.add_argument("--idle-sleep", type=float, default=5.0, help="Seconds to sleep when daemon is idle")
+    p_jobs.add_argument("--kinds", default="", help="Comma-separated job kinds to process")
+    p_jobs.add_argument("--no-maintenance", action="store_true", help="Do not auto-enqueue lifecycle maintenance")
+    p_jobs.add_argument("--maintenance-interval-seconds", type=float, default=86400.0,
+                        help="Daemon reschedule interval for lifecycle maintenance")
+    p_jobs.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+    p_jobs.set_defaults(func=cmd_process_jobs)
 
     return parser
 

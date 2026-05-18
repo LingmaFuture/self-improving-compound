@@ -504,12 +504,125 @@ class TestIngest(unittest.TestCase):
             assert json.loads(first.getvalue())["pending_jobs"] == 1
             assert json.loads(second.getvalue())["pending_jobs"] == 1
 
+    def test_process_jobs_consumes_ingest_and_writes_summary_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args_init = type("Args", (), {"root": tmp, "local_root": None})()
+            L.cmd_init(args_init)
+
+            content = "# Async tree test\n\nQueued chunks should become summaries."
+            import io
+            from contextlib import redirect_stdout
+
+            old_stdin = sys.stdin
+            try:
+                sys.stdin = io.StringIO(content)
+                class IngestArgs:
+                    root = tmp
+                    local_root = None
+                    kind = "document"
+                    file = ""
+                    source_id = "async-tree-test"
+                    title = ""
+                    tags = ""
+                    no_dedup = False
+
+                with redirect_stdout(io.StringIO()):
+                    L.cmd_ingest(IngestArgs())
+            finally:
+                sys.stdin = old_stdin
+
+            class JobsArgs:
+                root = tmp
+                local_root = None
+                max_jobs = 10
+                daemon = False
+                idle_sleep = 0.1
+                kinds = ""
+                no_maintenance = False
+                maintenance_interval_seconds = 86400
+                format = "json"
+
+            f = io.StringIO()
+            with redirect_stdout(f):
+                L.cmd_process_jobs(JobsArgs())
+
+            import json
+            data = json.loads(f.getvalue())
+            assert data["completed"] >= 1
+            assert data["queue"].get("pending", 0) == 0
+
+            store = L.get_store(tmp)
+            with store:
+                chunks = store.list_chunks(L.ListChunksQuery(limit=10))
+                assert len(chunks) == 1
+                assert store.get_chunk_lifecycle(chunks[0].id) == L.CHUNK_STATUS_ADMITTED
+                assert store.get_score(chunks[0].id) is not None
+                assert len(store.list_buffers()) >= 1
+                assert len(store.list_summaries()) >= 1
+
+    def test_lifecycle_job_archives_stale_warm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args_init = type("Args", (), {"root": tmp, "local_root": None})()
+            L.cmd_init(args_init)
+            store = L.get_store(tmp)
+            old = datetime.now(timezone.utc) - timedelta(days=120)
+            with store:
+                meta = L.Metadata(
+                    source_kind=L.SourceKind.DOCUMENT,
+                    source_id="stale-warm",
+                    owner="user",
+                    timestamp=old,
+                    time_range=(old, old),
+                    tags=["LRN"],
+                )
+                content = (
+                    "### LRN-20260101-001 (2026-01-01)\n"
+                    "- **Summary**: Stale warm entry\n"
+                    "- **Last-Seen**: 2026-01-01\n"
+                    "- **Recurrence-Count**: 1\n"
+                )
+                cid = L.chunk_id(L.SourceKind.DOCUMENT, "stale-warm", 0, content)
+                chunk = L.Chunk(id=cid, content=content, metadata=meta, token_count=1, seq_in_source=0, created_at=old)
+                store.upsert_chunks([chunk])
+                store.set_chunk_lifecycle(cid, L.CHUNK_STATUS_BUFFERED)
+                store.enqueue_job(L.MemoryStore.JobRow(
+                    kind="maintain_lifecycle",
+                    payload_json="{}",
+                    priority=10,
+                ))
+
+            class JobsArgs:
+                root = tmp
+                local_root = None
+                max_jobs = 1
+                daemon = False
+                idle_sleep = 0.1
+                kinds = "maintain_lifecycle"
+                no_maintenance = True
+                maintenance_interval_seconds = 86400
+                format = "json"
+
+            import io
+            from contextlib import redirect_stdout
+
+            with redirect_stdout(io.StringIO()):
+                L.cmd_process_jobs(JobsArgs())
+
+            with store:
+                assert store.get_chunk_lifecycle(cid) == L.CHUNK_STATUS_SEALED
+
     def test_parser_exposes_ingest(self):
         parser = L.build_parser()
         args = parser.parse_args(["ingest", "--kind", "chat", "--file", "/tmp/test.md"])
         assert args.command == "ingest"
         assert args.kind == "chat"
         assert args.file == "/tmp/test.md"
+
+    def test_parser_exposes_process_jobs(self):
+        parser = L.build_parser()
+        args = parser.parse_args(["process-jobs", "--max-jobs", "1", "--format", "json"])
+        assert args.command == "process-jobs"
+        assert args.max_jobs == 1
 
 
 class TestMaintain(unittest.TestCase):
