@@ -1233,7 +1233,11 @@ def cmd_promote(args: argparse.Namespace) -> None:
             print(f"[promote] Entry {entry_id} not found", file=sys.stderr)
             sys.exit(1)
 
-        workspace_root = base_dir.parent.resolve()
+        workspace_root = base_dir
+        subdir_parts = Path(SUBDIR_NAME).parts
+        for _ in subdir_parts:
+            workspace_root = workspace_root.parent
+        workspace_root = workspace_root.resolve()
         target_path = (workspace_root / target_file).resolve()
         try:
             target_path.relative_to(workspace_root)

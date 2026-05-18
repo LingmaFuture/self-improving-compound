@@ -1,99 +1,93 @@
-# Self-Improving Compound · 自进化记忆系统
+# Self-Improving Compound
 
-一个面向 AI Agent 的记忆与自进化系统，用结构化 SQLite 学习引擎替代朴素的文本记忆，通过实时捕获、定时审计、自动沉淀三层架构，让 Agent 越用越聪明。
+[English README](README.md)
 
-## 解决什么问题
+一个可移植的 AgentSkill，用来把 Agent 记忆从零散 Markdown 升级成结构化自进化系统：实时捕获、SQLite 学习库、cron 审计、每日事实记忆、workspace 轻量维护。
 
-普通 Agent 每次都从零开始——昨天的错误今天还会犯，用户纠正过后下次还会遗忘。Self-Improving Compound 给 Agent 装上三个能力：
+## 核心能力
 
-1. **当场记录**：任务结束前强制检查——有错误？有纠正？有 workaround？→ 写进 SQLite 记忆库
-2. **事后审计**：每 2 小时扫描最近的对话记录，找出「明明犯过错但没记录」的遗漏
-3. **自动升级**：经过验证的规则从 SQLite → Skill 文档 → Agent 指令，逐层固化
+- **最终回复前捕获可复用经验**：用户纠正、工具/API 坑、非显然失败、workaround、缺失能力。
+- **SQLite 作为执行学习源头**：默认写入 `learning/memory_tree/chunks.db`，支持搜索、去重、生命周期、导出。
+- **事实与教训分层**：事实连续性写入 `memory/YYYY-MM-DD.md`；可复用预防规则写入 `learning/`。
+- **cron 自动审计**：轻量检查、重型审计、每日事实记忆、post-digest workspace steward。
+- **规则逐层沉淀**：稳定规则进入 `skills/`、`AGENTS.md`、`TOOLS.md`、`MEMORY.md` 等长期状态文件。
 
-## 架构
 
+## 3+7 协同演化模型
+
+这里的 **3+7** 指：3 个长期状态目录 + 7 个根目录 Markdown 控制面文件。
+
+**3 个状态目录**
+
+- `memory/`：每日事实连续性，记录发生了什么、做了什么决策、路径、链接、风险和 follow-up。
+- `learning/`：SQLite 执行学习库，记录纠正、工具/API 坑、workflow 规则和可复用预防经验。
+- `skills/`：沉淀后的可复用能力和流程说明。
+
+**7 个根目录 Markdown**
+
+- `AGENTS.md`：workspace contract、路由规则、执行策略、安全边界。
+- `HEARTBEAT.md`：轻量 check-in 表面；当 cron 接管精确定时后可保持极简/空。
+- `IDENTITY.md`：兼容入口或 identity 指针。
+- `MEMORY.md`：pinned long-term hot context。
+- `SOUL.md`：Agent 身份/persona。
+- `TOOLS.md`：本地环境和工具事实。
+- `USER.md`：用户画像、协作偏好、长期上下文。
+
+Workspace Steward 只能做小而安全的一致性修正：不能重写人格、安全规则，也不能把每日事实堆进根文件。
+
+## 安装
+
+```bash
+clawhub install self-improving-compound
 ```
-对话中的错误/纠正/workaround
-         │
-         ▼
-   ┌─────────────────┐
-   │  Capture Gate    │  ← AGENTS.md 强制规则：最终回复前检查+记录
-   │  search → log    │
-   └────────┬────────┘
-            │
-   ┌────────▼────────┐
-   │  cron Light Check│  ← 每 2h，隔离 session，sessions_history 扫描
-   │  cron Heavy Audit│  ← 每 12h，生命周期维护+系统故障审计
-   │  Daily Export    │  ← 每日导出 Markdown 供人类审阅
-   └────────┬────────┘
-            │
-   ┌────────▼────────────────────────────┐
-   │  learning/ → skills/ → AGENTS.md    │
-   │            → TOOLS.md               │
-   │            → MEMORY.md              │
-   └─────────────────────────────────────┘
-```
 
-这是一个**封闭循环**：错误→记录→审计→升级→更少错误。
-
-## 关键特性
-
-- **SQLite 记忆引擎**：所有教训存为结构化 Chunk，支持评分、生命周期、去重、Pattern-Key 索引
-- **Cron 审计管线**：通过 OpenClaw 隔离 cron 任务实现，不污染主对话上下文。一键安装：告诉你的 agent "I want to install the self-improving compound cron jobs"，agent 会读取 `scripts/setup-cron.json` 创建三个 cron 作业
-- **Capture Gate 输出路由**：不同类型的教训自动流向正确目标（事实→memory/，错误→learning/，规则→skills/）
-- **7+3 共演化模型**：7 个 Markdown 文件 + 3 个目录作为一个系统的不同层，任一层的改进推动其他层同步升级
-- **Python 3.8+ CLI + Bash hooks**：无需网络、无需 Node.js 运行时
+要求：Python 3.8+、bash。本地 CLI 不需要网络访问。
 
 ## 快速开始
 
 ```bash
-# 1. 安装 skill
-clawhub install self-improving-compound
-
-# 2. 一键安装 cron 审计管线
-# 对你的 agent 说："使用 scripts/setup-cron.json 安装 cron 审计作业"
-
-# 3. 初始化学习存储
 python3 scripts/learnings.py --root /path/to/workspace init
-
-# 4. 记录一条纠正
-python3 scripts/learnings.py --root /path/to/workspace log-correction \
-  --summary "Telegram 用了表格格式" \
-  --correct "用列表，不用表格" \
-  --pattern chat:telegram-format
-
-# 5. 每日导出
-./scripts/learning-export.sh
+python3 scripts/learnings.py --root /path/to/workspace search "cron context" --limit 5
+python3 scripts/learnings.py --root /path/to/workspace log-learning \
+  --summary "隔离 cron 需要显式拉取 session history" \
+  --details "isolated session 不会自动继承主对话上下文。" \
+  --pattern cron:session-context
+python3 scripts/learnings.py --root /path/to/workspace maintain --apply
+bash scripts/learning-export.sh
 ```
 
-## 包含的 cron 作业
+## 推荐 cron 管线
 
-| 作业 | 频率 | 功能 |
-|------|------|------|
-| Light Check | 每 2h (08:00-22:00) | 扫描对话记录，捕获遗漏的教训 |
-| Heavy Audit | 每天 09:00 + 22:00 | 系统故障审计、学习周期维护 |
-| Daily Export | 每天 00:10 | 导出 SQLite 记忆为 Markdown 供审阅 |
+模板位于 `scripts/setup-cron.json`，安装说明位于 `scripts/setup-cron-agent.md`。
 
-cron 作业定义在 `scripts/setup-cron.json`，安装指南在 `scripts/setup-cron-agent.md`。
+| Job | 默认时间 | 作用 |
+|---|---:|---|
+| Self-Improving Light Check | 08:00–22:00 每 2 小时 | 抓明显漏记的纠正、失败、blocker。 |
+| Learning Audit Heavy | 09:00 / 22:00 | 审计系统/cron 失败，维护 HOT/WARM/COLD 生命周期。 |
+| Daily Memory Digest | 23:50 | 写 `memory/YYYY-MM-DD.md`，再抽取可复用教训。 |
+| Daily Workspace Steward | 00:20 | 导出 learning，轻量检查 `learning/`、`skills/`、7 个根目录 Markdown 控制面文件。 |
 
-## 目录结构
+安装 cron 需要用户确认。可以让 OpenClaw agent 执行：
 
-```
-learning/
-├── memory_tree/chunks.db    # SQLite 源（真源）
-├── index.md                 # 自动生成的快照
-├── memory.md                # HOT 层（始终加载）
-├── corrections.md           # 纠正日志
-├── heartbeat-state.md       # 审计状态
-├── projects/                # WARM 层（项目特定）
-├── domains/                 # WARM 层（领域特定）
-└── archive/                 # COLD 层（已归档）
-```
+> 使用 `scripts/setup-cron.json` 安装 self-improving compound cron jobs。先检查现有任务，有同名任务则 update，不要重复创建。
 
-## Author
+## 路径模型
 
-Rockway Chen · [rockwaychen@gmail.com](mailto:rockwaychen@gmail.com) · [GitHub: LingmaFuture](https://github.com/LingmaFuture)
+- **Skill root**：本技能目录，包含 `scripts/`、`references/`、`hooks/`、`evals/`。
+- **Workspace root**：实际项目或 Agent 状态目录，包含：
+  - `learning/memory_tree/chunks.db`
+  - `learning/index.md`
+  - `memory/YYYY-MM-DD.md`
+  - `AGENTS.md`、`MEMORY.md`、`TOOLS.md`、`USER.md`、`SOUL.md`、`HEARTBEAT.md`、`IDENTITY.md` 等根状态文件
 
-## License
+不要把长期学习写进 skill 安装目录；始终使用 `--root /path/to/workspace`。
 
-MIT-0 — 自由使用、修改、分发。
+## 守护边界
+
+- 先搜索再写入，避免重复。
+- learning 条目要短、可搜索、偏预防规则。
+- 不记录密钥、token、原始私密对话或易过期状态。
+- cron audit 候选只是审计提示，不是自动真理。
+- Workspace Steward 只能做小而安全的本地 Markdown 修正；不能重写人格、安全规则、删除文件或修改 cron。
+
+维护者：Rockway Chen · <rockwaychen@gmail.com> · <https://github.com/LingmaFuture>

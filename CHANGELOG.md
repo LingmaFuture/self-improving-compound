@@ -1,4 +1,21 @@
 # Changelog
+
+## 6.2.1 - 2026-05-18
+
+- Clarified the 3+7 co-evolution model: 3 state directories (`memory/`, `learning/`, `skills/`) plus 7 root Markdown control-plane files (`AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `TOOLS.md`, `USER.md`).
+- Added README language links between `README.md` and `README_zh.md`.
+- Tightened Workspace Steward wording to explicitly inspect the 7 root Markdown files.
+
+
+## 6.2.0 - 2026-05-18
+
+- Added portable Daily Memory Digest integration guidance: facts stay in `memory/YYYY-MM-DD.md`; reusable lessons are extracted into SQLite.
+- Upgraded the cron template from a three-job audit pipeline to a four-job maintenance pipeline with `Daily Workspace Steward`.
+- Generalized `scripts/daily-memory.sh` so public installs can use an optional collector instead of Rockway-local absolute paths.
+- Refreshed README / README_zh and SKILL.md to document 7+3 co-evolution, daily memory, and workspace stewardship guardrails.
+- Synced local helper scripts, hooks, evals, and references from the hardened OpenClaw installation.
+- Cleaned generated/private research artifacts from the public package before publishing.
+
 ## 6.1.7 - 2026-05-17
 
 - Added cron installation infrastructure (scripts/setup-cron.json, scripts/setup-cron-agent.md).

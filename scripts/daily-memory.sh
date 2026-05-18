@@ -1,258 +1,87 @@
 #!/usr/bin/env bash
-# daily-memory.sh - Generate comprehensive daily learning entries
+# daily-memory.sh - Portable helper for a daily factual-memory digest.
 #
-# Replaces the previously too-brief daily memory.md entries with
-# comprehensive, structured daily records. Integrates with the
-# learning compound's HOT/WARM/COLD tiered memory system.
-#
-# Usage:
-#   ./scripts/daily-memory.sh --root /path/to/workspace "Summary text"
-#   cat daily-notes.md | ./scripts/daily-memory.sh --root /path/to/workspace
-#   OPENCLAW_WORKSPACE=/path ./scripts/daily-memory.sh "Summary text"
+# This script does not write the final note by itself. It validates the target
+# date/root, optionally runs a user-provided context collector, and prints the
+# contract the agent should follow when writing memory/YYYY-MM-DD.md.
 
 set -euo pipefail
 
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
-ROOT=""
-CONTENT=""
-APPEND_MODE="false"
+ROOT="${OPENCLAW_WORKSPACE:-$PWD}"
+DATE=""
+COLLECTOR="${SELF_IMPROVING_DAILY_COLLECTOR:-}"
 
-print_usage() {
-    cat << 'USAGE'
-Usage: daily-memory.sh [--root PATH] [--append] [SUMMARY]
+usage() {
+  cat <<'USAGE'
+Usage: daily-memory.sh [--root PATH] [--date YYYY-MM-DD] [--collector COMMAND]
 
-Generate a comprehensive daily memory entry at learning/daily/YYYY-MM-DD.md
-in the workspace root. Outputs to both the file and stdout.
+Prepare a Daily Memory Digest run. The agent should then gather/read context,
+write memory/YYYY-MM-DD.md, and run the self-improvement capture pass.
 
 Options:
-  --root PATH     Workspace root directory (default: $OPENCLAW_WORKSPACE or cwd)
-  --append        Append a new timestamped section to an existing file
-  --help          Show this help message
+  --root PATH          Workspace root (default: OPENCLAW_WORKSPACE or $PWD)
+  --date DATE          Target date in YYYY-MM-DD format (default: today in Asia/Shanghai)
+  --collector COMMAND  Optional command that collects/prints daily context.
+                       Also configurable via SELF_IMPROVING_DAILY_COLLECTOR.
 
-Content can be provided as:
-  1. A positional argument after options:
-     ./scripts/daily-memory.sh --root /path/to/workspace "Summarized daily content"
-
-  2. Piped via stdin:
-     cat daily-notes.md | ./scripts/daily-memory.sh --root /path/to/workspace
-
-  3. Here-document:
-     ./scripts/daily-memory.sh --root /path/to/workspace << 'EOF'
-     Today I worked on...
-     EOF
-
-If no content is provided, the script prints this help and exits.
-
-Environment:
-  OPENCLAW_WORKSPACE    Default workspace root (overridden by --root)
+Collector contract:
+  If provided, COMMAND is executed with DAILY_MEMORY_DATE and OPENCLAW_WORKSPACE
+  in the environment. It may print a context file path or summary. The agent
+  must inspect the output before writing the final note.
 USAGE
 }
 
 while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --root)
-            ROOT="$2"
-            shift 2
-            ;;
-        --append)
-            APPEND_MODE="true"
-            shift
-            ;;
-        --help|-h)
-            print_usage
-            exit 0
-            ;;
-        --)
-            shift
-            CONTENT="$*"
-            break
-            ;;
-        -*)
-            echo "ERROR: Unknown option: $1" >&2
-            print_usage >&2
-            exit 1
-            ;;
-        *)
-            CONTENT="$*"
-            break
-            ;;
-    esac
+  case "$1" in
+    --root) ROOT="$2"; shift 2 ;;
+    --date) DATE="$2"; shift 2 ;;
+    --collector) COLLECTOR="$2"; shift 2 ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
+  esac
 done
 
-# ---------------------------------------------------------------------------
-# Resolve workspace root
-# ---------------------------------------------------------------------------
-if [ -z "$ROOT" ]; then
-    ROOT="${OPENCLAW_WORKSPACE:-$(pwd)}"
+if [[ -z "$DATE" ]]; then
+  DATE="$(TZ=Asia/Shanghai date +%F)"
 fi
 
-# Normalize to absolute path
-ROOT="$(cd "$ROOT" 2>/dev/null && pwd || echo "$ROOT")"
-
-if [ ! -d "$ROOT" ]; then
-    echo "ERROR: Workspace root does not exist: $ROOT" >&2
-    exit 1
+if [[ ! "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+  echo "ERROR: --date must be in YYYY-MM-DD format. Got: $DATE" >&2
+  usage >&2
+  exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Read content from stdin if not provided as argument
-# ---------------------------------------------------------------------------
-if [ -z "$CONTENT" ]; then
-    # Check if stdin has data (not a terminal)
-    if [ ! -t 0 ]; then
-        CONTENT="$(cat)"
-    fi
-fi
+mkdir -p "$ROOT/memory"
 
-if [ -z "$CONTENT" ]; then
-    print_usage >&2
-    exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# Prepare paths and timestamps
-# ---------------------------------------------------------------------------
-MEMORY_DIR="$ROOT/learning/daily"
-mkdir -p "$MEMORY_DIR"
-
-TODAY="$(date +%Y-%m-%d)"
-NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-NOW_HUMAN="$(date '+%Y-%m-%d %H:%M:%S %Z')"
-MEMORY_FILE="$MEMORY_DIR/$TODAY.md"
-
-# ---------------------------------------------------------------------------
-# Check for learnings.py integration
-# ---------------------------------------------------------------------------
-LEARNINGS_CLI=""
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -x "$SCRIPT_DIR/learnings.py" ]; then
-    LEARNINGS_CLI="$SCRIPT_DIR/learnings.py"
-elif command -v python3 &>/dev/null; then
-    # Try to find learnings.py relative to workspace
-    for candidate in \
-        "$ROOT/scripts/learnings.py" \
-        "$ROOT/../scripts/learnings.py" \
-        "$HOME/.openclaw/projects/research/clawhub-self-improving-compound-20260516-162124/skills/self-improving-compound/scripts/learnings.py"; do
-        if [ -x "$candidate" ]; then
-            LEARNINGS_CLI="$candidate"
-            break
-        fi
-    done
-fi
-
-# ---------------------------------------------------------------------------
-# Build the daily entry
-# ---------------------------------------------------------------------------
-
-build_entry() {
-    local content="$1"
-    local today="$2"
-    local now_iso="$3"
-    local now_human="$4"
-    local append_mode="$5"
-    local learnings_cli="$6"
-    local root="$7"
-
-    # If appending, add a separator and timestamp header
-    if [ "$append_mode" = "true" ] && [ -f "$MEMORY_FILE" ]; then
-        cat << SECTION_SEPARATOR
-
----
-
-## Appended Session: $now_human
-
-SECTION_SEPARATOR
-    fi
-
-    # Generate the structured daily entry
-    cat << ENTRY_TEMPLATE
-# Daily Memory: $today
-
-> Generated: $now_iso | Workspace: \`$root\`
-
-## Session Overview
-- **Active Duration**: [fill in time range]
-- **Primary Focus**: $content
-- **Mood/Tone**: [productive / debugging / exploratory / learning]
-
-## Tasks Completed
-- [ ] [Task 1 - brief description]
-- [ ] [Task 2 - brief description]
-- [ ] [Task 3 - brief description]
-
-## Key Decisions Made
-- **Decision**: [what was decided]
-  - **Rationale**: [why this choice]
-  - **Alternatives Considered**: [what else was on the table]
-
-## Errors Encountered & Resolved
-- **Error**: [description of the failure]
-  - **Root Cause**: [why it happened]
-  - **Resolution**: [how it was fixed]
-  - **Should Be Logged to learnings?**: [YES / NO — with pattern-key suggestion]
-
-## New Learnings
-- **Learning**: [what was learned]
-  - **Context**: [when and where this applies]
-  - **Pattern-Key Suggestion**: [e.g., \`docker-build-cache\`, \`api-pagination-defaults\`]
-
-## Corrections Applied
-- **Correction**: [what was corrected]
-  - **Previous Understanding**: [the wrong belief or assumption]
-  - **Correct Understanding**: [the right answer or approach]
-
-## Skills Discovered / Refined
-- **Skill**: [skill name or description]
-  - **Source**: [external docs / debug session / user taught / trial-and-error]
-  - **Reusability**: [project-specific / domain-general / universal]
-
-## Pending / Follow-up
-- [ ] [Item 1 — context and priority]
-- [ ] [Item 2 — context and priority]
-- [ ] [Item 3 — context and priority]
-
-## Self-Improvement Audit
-- [ ] Did I capture all non-obvious failures to \`learning/\`?
-- [ ] Did any Pattern-Key reach Recurrence-Count >= 3?
-- [ ] Did I promote any learnings to project or domain memory?
-- [ ] Did I identify any new reusable skills?
-
-## Raw Input
-\`\`\`
-$content
-\`\`\`
-ENTRY_TEMPLATE
-}
-
-ENTRY="$(build_entry "$CONTENT" "$TODAY" "$NOW_ISO" "$NOW_HUMAN" "$APPEND_MODE" "$LEARNINGS_CLI" "$ROOT")"
-
-# ---------------------------------------------------------------------------
-# Write to file
-# ---------------------------------------------------------------------------
-if [ "$APPEND_MODE" = "true" ] && [ -f "$MEMORY_FILE" ]; then
-    echo "$ENTRY" >> "$MEMORY_FILE"
-    echo "[daily-memory] Appended session to: $MEMORY_FILE" >&2
+if [[ -n "$COLLECTOR" ]]; then
+  echo "[daily-memory] Running collector: $COLLECTOR"
+  DAILY_MEMORY_DATE="$DATE" OPENCLAW_WORKSPACE="$ROOT" bash -lc "$COLLECTOR"
 else
-    echo "$ENTRY" > "$MEMORY_FILE"
-    echo "[daily-memory] Created: $MEMORY_FILE" >&2
+  echo "[daily-memory] No collector configured. Gather context with runtime tools before writing the note."
 fi
 
-# ---------------------------------------------------------------------------
-# Output to stdout
-# ---------------------------------------------------------------------------
-echo "$ENTRY"
+cat <<EOF
 
-# ---------------------------------------------------------------------------
-# Optional: suggest learnings.py integration
-# ---------------------------------------------------------------------------
-if [ -n "$LEARNINGS_CLI" ]; then
-    cat >&2 << HINT
+[daily-memory] Contract:
+- Workspace root: $ROOT
+- Target note:    $ROOT/memory/$DATE.md
+- Date:           $DATE
 
-[daily-memory] Tip: Review the entry above and log durable lessons with:
-  python3 $LEARNINGS_CLI --root "$ROOT" log-learning --summary "Your lesson summary" --details "Why it matters" --pattern "domain:key"
-  python3 $LEARNINGS_CLI --root "$ROOT" log-correction --summary "What was wrong" --correct "What is correct" --pattern "domain:key"
+Write a factual daily note with these sections when applicable:
+1. Overview
+2. Key workflows and actions
+3. Important decisions
+4. System/configuration changes
+5. Files/projects changed
+6. External integrations and automations
+7. Problems, risks, and unfinished work
+8. Items to promote into long-term memory/rules
+9. Next-step suggestions
+10. Source notes
 
-HINT
-fi
+After writing the note, run the self-improvement capture gate:
+- corrections/preferences -> log-correction
+- tool/API/schema failures -> log-error
+- reusable workflow conventions -> log-learning
+- missing capabilities/repeated friction -> log-feature
+EOF

@@ -51,13 +51,16 @@ def candidate_lines(path: Path) -> list[tuple[int, str, str]]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=os.environ.get("OPENCLAW_WORKSPACE", "/home/rockway/.openclaw/workspace"))
+    ap.add_argument("--root", default=os.environ.get("OPENCLAW_WORKSPACE", os.getcwd()))
     ap.add_argument("--days", type=int, default=2)
     ap.add_argument("--log", action="store_true", help="log audit summary when missed candidates are found")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
     root = Path(args.root).expanduser().resolve()
-    skill = root / "skills/self-improving-compound/scripts/learnings.py"
+    skill_dir = Path(os.environ.get("SELF_IMPROVING_SKILL_DIR", Path(__file__).resolve().parents[1])).expanduser().resolve()
+    skill = Path(os.environ.get("SELF_IMPROVING_LEARNINGS_CLI", skill_dir / "scripts/learnings.py")).expanduser().resolve()
+    if not skill.exists():
+        raise SystemExit(f"learnings.py not found: {skill}")
     candidates = []
     for path in collect_files(root, args.days):
         for line_no, kind, text in candidate_lines(path):

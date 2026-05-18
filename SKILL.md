@@ -1,9 +1,9 @@
 ---
 name: self-improving-compound
-description: "Agent memory and self-improvement system. Replaces naive file-based agent memory with a structured SQLite learning engine: capture corrections, errors, and reusable lessons during active work, audit session history for missed learnings via isolated cron jobs, and promote proven rules into skills and agent instructions. 7+3 co-evolution model — memory/ (facts), learning/ (SQLite lessons), skills/ (hardened rules), AGENTS.md (behavior), TOOLS.md (env knowledge), MEMORY.md (long-term context), HEARTBEAT.md (check-ins) all improve together. Python 3.8+ CLI with bash hooks. Use for: logging non-obvious failures, user corrections, tool/API gotchas, or missing capabilities before the final reply. Use for: setting up automated cron-based audit pipelines that catch what real-time capture misses. Do not use for trivial typos or routine noise."
+description: "Agent memory and self-improvement system. Replaces naive file-based agent memory with a structured SQLite learning engine: capture corrections, errors, and reusable lessons during active work, audit session history for missed learnings via isolated cron jobs, and promote proven rules into skills and agent instructions. 3+7 co-evolution model — 3 state directories (`memory/`, `learning/`, `skills/`) plus 7 root Markdown control-plane files (`AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `TOOLS.md`, `USER.md`) improve together. Adds daily factual memory and workspace stewardship loops. Python 3.8+ CLI with bash hooks. Use for: logging non-obvious failures, user corrections, tool/API gotchas, or missing capabilities before the final reply. Use for: setting up automated cron-based audit pipelines that catch what real-time capture misses. Do not use for trivial typos or routine noise."
 compatibility: "Portable Agent Skills format. Core workflow is agent-agnostic. Bundled helpers require Python 3.8+; hook helpers require bash. No network access is required."
 metadata:
-  version: "6.1.7"
+  version: "6.2.1"
   original_slug: "self-improving-compound"
   category: "memory-system"
   author: "Hybrid adaptation from actual-self-improvement, self-improving-compound, OpenHuman memory-tree, and Hermes Agent architecture | Contact: rockwaychen@gmail.com | GitHub: LingmaFuture"
@@ -13,12 +13,33 @@ metadata:
 
 An agent memory and learning system that replaces naive file-based memory with a structured pipeline: real-time capture, automated cron-based audit, and continuous promotion of lessons into skills and agent instructions.
 
-The system runs as three layers:
+The system runs as four layers:
 - **Layer 1 — Real-time capture**: AGENTS.md final-before-reply gate logs corrections, errors, and workarounds to SQLite as they happen.
 - **Layer 2 — Cron audit**: Isolated background jobs scan session history via `sessions_history`, detect missed lessons, and maintain lifecycle (HOT → WARM → COLD).
-- **Layer 3 — Promotion**: Proven rules flow from `learning/` SQLite → `skills/` SKILL.md → `AGENTS.md` → `TOOLS.md`. The full 7+3 system co-evolves.
+- **Layer 3 — Daily factual memory**: a nightly `memory/YYYY-MM-DD.md` digest records decisions, paths, risks, links, and follow-ups; only reusable lessons are extracted into SQLite.
+- **Layer 4 — Promotion + stewardship**: proven rules flow from `learning/` SQLite → `skills/` SKILL.md → the 7 root Markdown control-plane files (`AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `TOOLS.md`, `USER.md`). The full 3+7 system co-evolves.
 
 **Author:** Rockway Chen · [rockwaychen@gmail.com](mailto:rockwaychen@gmail.com) · [GitHub: LingmaFuture](https://github.com/LingmaFuture)
+
+## 3+7 co-evolution model
+
+The **3** state directories are:
+
+- `memory/` — factual daily continuity.
+- `learning/` — SQLite-backed execution lessons.
+- `skills/` — hardened reusable procedures.
+
+The **7** root Markdown control-plane files are:
+
+- `AGENTS.md` — workspace contract, routing, execution policy, safety boundaries.
+- `HEARTBEAT.md` — lightweight check-in surface; often intentionally empty when cron owns timing.
+- `IDENTITY.md` — compatibility pointer or short identity bridge.
+- `MEMORY.md` — pinned long-term hot context.
+- `SOUL.md` — agent identity/persona.
+- `TOOLS.md` — concrete local environment/tool facts.
+- `USER.md` — durable user profile and collaboration preferences.
+
+The steward loop should keep these layers aligned with small, safe edits only. It must not rewrite persona, weaken safety/privacy rules, or promote volatile daily facts into root-level bloat.
 
 ## Core idea
 
@@ -56,7 +77,7 @@ Not all lessons go to the same place. Route based on type:
 | Behavioral constraints | `AGENTS.md` | "Don't commit workspace root" |
 | Environment-specific tool knowledge | `TOOLS.md` | "Tailscale node name" |
 
-The full system co-evolves: fixing one layer while leaving another stale is half-done work. When a lesson reveals a skill is stale, upgrade it immediately and bump its version.
+The full 3+7 system co-evolves: fixing one layer while leaving another stale is half-done work. When a lesson reveals a skill is stale, upgrade it immediately and bump its version.
 
 ## Hybrid architecture
 
@@ -90,22 +111,24 @@ There are **two different roots** in this skill:
    - `hooks/...`
 
 2. **Workspace root** — where the project or active workspace lives:
-- `learning/memory_tree/chunks.db`
-- `learning/index.md` (SQLite-generated snapshot)
-- `learning/projects/`
-- `learning/domains/`
-- `learning/archive/`
-   - `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `SOUL.md`, `TOOLS.md`
+   - `learning/memory_tree/chunks.db`
+   - `learning/index.md` (SQLite-generated snapshot)
+   - `memory/YYYY-MM-DD.md` factual daily notes, when enabled
+   - `learning/projects/`
+   - `learning/domains/`
+   - `learning/archive/`
+   - root agent files such as `AGENTS.md`, `MEMORY.md`, `TOOLS.md`, `USER.md`, `SOUL.md`, `HEARTBEAT.md`, `IDENTITY.md`
 
 Never write learnings into the installed skill directory. Always target the **workspace root**.
 
 
 ## Activation hardening mechanisms
 
-When this skill is installed in a persistent agent runtime, self-improvement must be enforced by the system rather than left to memory. The recommended architecture uses two layers:
+When this skill is installed in a persistent agent runtime, self-improvement must be enforced by the system rather than left to memory. The recommended architecture uses three enforcement loops:
 
-- **Layer 1 — Capture gate**: an agent instruction requiring `search + log` before every final reply after a non-trivial task. This catches lessons in real-time during active work.
-- **Layer 2 — Cron enforcement**: isolated background jobs that audit recent session history, scan for system failures, maintain lifecycle, and export SQLite for review. Cron runs in *isolated sessions* that do not consume the main conversation context.
+- **Capture gate**: an agent instruction requiring `search + log` before every final reply after a non-trivial task. This catches lessons in real-time during active work.
+- **Cron enforcement**: isolated background jobs that audit recent session history, scan for system failures, maintain lifecycle, and export SQLite for review. Cron runs in *isolated sessions* that do not consume the main conversation context.
+- **Daily stewardship**: a factual daily digest plus a post-digest workspace steward keep `memory/`, `learning/`, `skills/`, and the 7 root Markdown control-plane files aligned without broad rewrites.
 
 ### Architecture decisions (why cron, not heartbeat)
 
@@ -120,7 +143,8 @@ Cron                                     Schedule (Asia/Shanghai)
 ──────────────────────────────────────   ──────────────────────
 Self-Improving Light Check               0 8-22/2 * * *    (every 2h during waking hours)
 Learning Audit (Heavy)                   0 9,22 * * *      (2x/day)
-Daily Learning Export                    10 0 * * *        (once/day after midnight)
+Daily Memory Digest                      50 23 * * *       (nightly factual memory)
+Daily Workspace Steward                  20 0 * * *        (post-digest maintenance)
 ```
 
 #### Light Check (every 2h, 08:00-22:00)
@@ -131,9 +155,13 @@ A quick in-between scan that locates the main session via `sessions_list`, pulls
 
 Full audit: system-failure check, cron-failure scan, `learning-audit.py --log`, and `learnings.py maintain --apply` for lifecycle promotion/demotion. Tools: `exec`, `read`, `cron`. Timeout: 240s.
 
-#### Daily Export (00:10)
+#### Daily Memory Digest (23:50)
 
-Run `scripts/learning-export.sh` to write `learning/memory-export.md` and `learning/status.json` for human review. Tools: `exec`, `read`. Timeout: 120s.
+Run `scripts/daily-memory.sh`, gather or read the daily context, write `memory/YYYY-MM-DD.md`, then run the capture gate on the final note. Facts stay in `memory/`; compact reusable lessons go to SQLite. See `references/daily-memory-digest.md`. Timeout: 300s.
+
+#### Daily Workspace Steward (00:20)
+
+Run `scripts/learning-export.sh`, inspect `learning/`, `skills/*/SKILL.md`, and root agent markdown files for small safe consistency updates. It may fix verified stale facts or clear contradictions, but must not rewrite persona, weaken safety/privacy rules, delete files, or change cron jobs. Timeout: 300s.
 
 ### Cron installation (one-time setup)
 
@@ -149,9 +177,9 @@ Quick setup (run from your OpenClaw main session):
    - Read the JSON definitions
    - Resolve placeholder paths (skill root, workspace root)
    - Ask or infer your delivery channel (Telegram / Feishu / etc.)
-   - Call `cron add` three times — one for each job
+   - Call `cron add` / `cron update` for each job, avoiding duplicates
 
-3. **Verify**: `cron list` should show three enabled jobs with `nextRunAtMs` set.
+3. **Verify**: `cron list` should show enabled jobs with `nextRunAtMs` set.
 
 If you already have these jobs running, this step is a no-op.
 
@@ -190,6 +218,16 @@ Route watchdog, doctor, healthcheck, and cron failure signals into `log-error` w
 | A resolved, general pattern could help other projects | Extract a new skill |
 
 ## Standard workflow
+
+### 0) Optional nightly factual memory
+
+If the workspace uses daily factual notes, run or schedule:
+
+```bash
+bash scripts/daily-memory.sh --root /absolute/path/to/workspace
+```
+
+Then write `memory/YYYY-MM-DD.md` from the gathered context and run the capture gate on that note. Use `references/daily-memory-digest.md` for the quality bar. Do not copy the diary into SQLite; extract only reusable prevention rules.
 
 ### 1) Find the workspace root first
 

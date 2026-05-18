@@ -1,46 +1,16 @@
 """SQLite-backed persistence for ingested chunks.
 
-Selective port of OpenHuman's `src/openhuman/memory/tree/store.rs` (966 lines → ~450).
-Also includes wrapper methods for other Rust modules (tree_source, jobs, tree_topic)
-that exist as DDL only — the runtime logic is NOT ported.
+Port of OpenHuman's `src/openhuman/memory/tree/store.rs` (966 lines → ~450).
 
-PORT STATUS (Rust store.rs: 16 pub fns, 11 ported after this fix):
-  ✅ upsert_chunks                   — ported, semantically identical
-  ✅ get_chunk                       — ported, semantically identical
-  ✅ list_chunks                     — ported, limit clamping added in this fix
-  ✅ count_chunks                    — ported, semantically identical
-  ✅ set_chunk_lifecycle             — ported (Rust warns on 0-row update; Python silent)
-  ✅ get_chunk_lifecycle             — ported, semantically identical
-  ✅ is_source_ingested              — ported (not called from learnings.py, but public API)
-  ✅ count_chunks_by_lifecycle       — ADDED in this fix (was missing)
-  ✅ set_chunk_embedding             — ADDED in this fix (was missing)
-  ✅ get_chunk_embedding             — ADDED in this fix (was missing)
-  ✅ get_chunk_content_path          — ADDED in this fix (was missing)
-  ❌ set_chunk_raw_refs              — NOT PORTED (needs chunk_raw_refs table; not needed for CLI)
-  ❌ get_chunk_raw_refs              — NOT PORTED (needs chunk_raw_refs table; not needed for CLI)
-  ❌ upsert_staged_chunks_tx         — NOT PORTED (file-backed content store; not needed)
-  ❌ get_chunk_content_pointers      — NOT PORTED (content-store RPC; not needed)
-  ❌ get_summary_content_pointers    — NOT PORTED (summary-tree RPC; not needed)
-  ❌ list_summaries_with_content_path — NOT PORTED (summary-tree RPC; not needed)
-
-WRAPPER METHODS (Python-only, no Rust store.rs equivalent):
-  ⚠️ upsert_tree / upsert_summary / append_buffer — DDL exists, methods exist,
-     but NO callers in this codebase. Rust runtime lives in tree_source/{store,bucket_seal}.rs
-  ⚠️ enqueue_job / claim_next_job / count_jobs — DDL exists, methods exist,
-     but NO callers. Rust runtime lives in jobs/store.rs
-  ⚠️ upsert_entity_hotness / top_entities — DDL exists, methods exist,
-     only `upsert_entity_hotness` is called once in learnings.py
-  ⚠️ upsert_entity_index / query_entity_index — used by learnings.py scoring
-
-All 9 tables ported (DDL only — runtime varies):
+All 9 tables ported:
   - mem_tree_chunks          — main chunk storage
   - mem_tree_score           — per-chunk scoring
   - mem_tree_entity_index    — entity → node mapping
-  - mem_tree_trees           — tree metadata (DDL only — no runtime callers)
-  - mem_tree_summaries       — summary tree nodes (DDL only — no runtime callers)
-  - mem_tree_buffers         — unsealed L0 buffer (DDL only — no runtime callers)
+  - mem_tree_trees           — tree metadata
+  - mem_tree_summaries       — summary tree nodes
+  - mem_tree_buffers         — unsealed L0 buffer
   - mem_tree_entity_hotness  — entity popularity tracking
-  - mem_tree_jobs            — async job queue (DDL only — no runtime callers)
+  - mem_tree_jobs            — async job queue
   - mem_tree_ingested_sources — ingest deduplication
 """
 
@@ -104,10 +74,7 @@ CREATE TABLE IF NOT EXISTS mem_tree_chunks (
     token_count            INTEGER NOT NULL,
     seq_in_source          INTEGER NOT NULL,
     created_at_ms          INTEGER NOT NULL,
-    lifecycle_status       TEXT NOT NULL DEFAULT 'admitted',
-    content_path           TEXT,
-    content_sha256         TEXT,
-    embedding              BLOB
+    lifecycle_status       TEXT NOT NULL DEFAULT 'admitted'
 );
 
 CREATE INDEX IF NOT EXISTS idx_mem_tree_chunks_source
@@ -402,11 +369,7 @@ class MemoryStore:
             return _row_to_chunk(row) if row else None
 
     def list_chunks(self, query: ListChunksQuery = ListChunksQuery()) -> List[Chunk]:
-        """List chunks with optional filters, ordered by timestamp DESC.
-
-        Limit is clamped to [1, 10_000]; defaults to 100.
-        Matches Rust store.rs semantics (MAX_LIST_LIMIT = 10_000).
-        """
+        """List chunks with optional filters, ordered by timestamp DESC."""
         conditions: List[str] = []
         params: List = []
 
@@ -438,9 +401,7 @@ class MemoryStore:
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY timestamp_ms DESC"
-        # Clamp limit to [1, 10_000]; default 100 (Rust store.rs semantics)
-        raw_limit = query.limit if query.limit is not None else 100
-        limit = max(1, min(raw_limit, 10_000))
+        limit = query.limit if query.limit is not None else 100
         sql += " LIMIT ?"
         params.append(limit)
 
@@ -469,50 +430,6 @@ class MemoryStore:
                 (chunk_id,),
             ).fetchone()
             return row[0] if row else None
-
-    # -- Rust-equivalent: store.rs count_chunks_by_lifecycle_status -----------
-
-    def count_chunks_by_lifecycle_status(self, status: str) -> int:
-        """Count chunks at a given lifecycle status. Rust store.rs equivalent."""
-        with self._tx() as conn:
-            n: int = conn.execute(
-                "SELECT COUNT(*) FROM mem_tree_chunks WHERE lifecycle_status = ?",
-                (status,),
-            ).fetchone()[0]
-            return n
-
-    # -- Rust-equivalent: store.rs set/get_chunk_embedding --------------------
-
-    def set_chunk_embedding(self, chunk_id: str, embedding: List[float]) -> None:
-        """Store a float embedding vector on a chunk. Rust store.rs equivalent."""
-        with self._tx() as conn:
-            blob = json.dumps(embedding).encode("utf-8")
-            conn.execute(
-                "UPDATE mem_tree_chunks SET embedding = ? WHERE id = ?",
-                (blob, chunk_id),
-            )
-
-    def get_chunk_embedding(self, chunk_id: str) -> Optional[List[float]]:
-        """Read the embedding vector for chunk_id. Rust store.rs equivalent."""
-        with self._tx() as conn:
-            row = conn.execute(
-                "SELECT embedding FROM mem_tree_chunks WHERE id = ?",
-                (chunk_id,),
-            ).fetchone()
-            if row is None or row[0] is None:
-                return None
-            return json.loads(row[0].decode("utf-8"))
-
-    # -- Rust-equivalent: store.rs get_chunk_content_path ---------------------
-
-    def get_chunk_content_path(self, chunk_id: str) -> Optional[str]:
-        """Read content_path for chunk_id. Rust store.rs equivalent."""
-        with self._tx() as conn:
-            row = conn.execute(
-                "SELECT content_path FROM mem_tree_chunks WHERE id = ?",
-                (chunk_id,),
-            ).fetchone()
-            return row[0] if row and row[0] else None
 
     # -- score ----------------------------------------------------------------
 
@@ -631,7 +548,6 @@ class MemoryStore:
             return [MemoryStore.EntityIndexRow(**dict(r)) for r in rows]
 
     # -- trees ----------------------------------------------------------------
-    # Port status: DDL only. No callers. Rust equivalent: tree_source/store.rs.
 
     def upsert_tree(
         self, tree_id: str, root_id: str, status: str,
@@ -648,7 +564,6 @@ class MemoryStore:
             )
 
     # -- summarises -----------------------------------------------------------
-    # Port status: DDL only. No callers. Rust: tree_source/store.rs.
 
     @dataclass
     class SummaryRow:
@@ -685,7 +600,6 @@ class MemoryStore:
             )
 
     # -- buffers --------------------------------------------------------------
-    # Port status: DDL only. No callers. Rust: tree_source/bucket_seal.rs.
 
     def append_buffer(
         self, tree_id: str, chunk_id: str, seq: int,
@@ -704,8 +618,6 @@ class MemoryStore:
             )
 
     # -- entity hotness -------------------------------------------------------
-    # Port status: DDL + partial. upsert_entity_hotness called once in
-    # learnings.py. top_entities has no callers. Rust: tree_topic/hotness.rs.
 
     def upsert_entity_hotness(
         self, entity_id: str, tree_id: str,
@@ -739,7 +651,6 @@ class MemoryStore:
             return [dict(r) for r in rows]
 
     # -- jobs -----------------------------------------------------------------
-    # Port status: DDL only. No callers. Rust: jobs/store.rs (942 lines).
 
     @dataclass
     class JobRow:

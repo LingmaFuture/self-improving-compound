@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="${OPENCLAW_WORKSPACE:-/home/rockway/.openclaw/workspace}"
-SKILL_DIR="${SELF_IMPROVING_SKILL_DIR:-$ROOT/skills/self-improving-compound}"
+ROOT="${OPENCLAW_WORKSPACE:-$PWD}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_DIR="${SELF_IMPROVING_SKILL_DIR:-$(dirname "$SCRIPT_DIR")}"
+LEARNINGS_CLI="${SELF_IMPROVING_LEARNINGS_CLI:-$SKILL_DIR/scripts/learnings.py}"
 LOG="$ROOT/learning/system-failure-audit.log"
 mkdir -p "$ROOT/learning"
 {
@@ -22,8 +24,8 @@ mkdir -p "$ROOT/learning"
 mv "$LOG.tmp" "$LOG"
 if grep -Eiq '(^|[^a-z])(error|failed|failure|unhealthy|critical|panic|exception|traceback)([^a-z]|$)' "$LOG"; then
   SUMMARY=$(grep -Ei 'error|failed|failure|unhealthy|critical|panic|exception|traceback' "$LOG" | head -5 | tr '\n' '; ' | cut -c1-500)
-  python3 "$SKILL_DIR/scripts/learnings.py" --root "$ROOT" search "$SUMMARY" --limit 3 | grep -q 'No results' && \
-  python3 "$SKILL_DIR/scripts/learnings.py" --root "$ROOT" log-error \
+  python3 "$LEARNINGS_CLI" --root "$ROOT" search "$SUMMARY" --limit 3 | grep -q 'No results' && \
+  python3 "$LEARNINGS_CLI" --root "$ROOT" log-error \
     --summary "OpenClaw system audit detected failure signal" \
     --details "${SUMMARY}. Full audit log: $LOG" \
     --pattern "system:openclaw-audit-failure" \

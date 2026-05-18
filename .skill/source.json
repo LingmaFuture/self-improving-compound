@@ -1,0 +1,19 @@
+{
+  "skillName": "self-improvement",
+  "localDirectory": "<workspace>/skills/self-improving-compound",
+  "upstreamUrl": "https://clawhub.ai/lingmafuture/self-improving-compound",
+  "clawhubSlugUsed": "self-improving-compound",
+  "activeCopy": false,
+  "upstreamVersion": "6.1.0",
+  "localVersion": "6.1.4",
+  "lastReviewed": "2026-05-17",
+  "publicSanitized": true,
+  "publicStagingCopy": true,
+  "publicSlug": "self-improving-compound",
+  "publicDisplayName": "Self Improving Compound",
+  "customizations": [
+    "Full sync from ClawHub published 6.1.3 + capture gate routing + 7+3 co-evolution model",
+    "6.1.x series: SQLite memory-tree backend, activation hardening mechanisms, cron enforcement architecture, session-history aware audit",
+    "Published as ClawHub self-improving-compound (sanitized: no local paths, chat IDs, cron IDs, Notion links)"
+  ]
+}
