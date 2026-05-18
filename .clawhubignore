@@ -1,0 +1,14 @@
+# Local research/reference material; keep locally, never publish.
+.reference/
+.sisyphus/
+squashfs-root
+AppDir/
+
+# VCS / generated files
+.git/
+.gitignore
+.clawhubignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store

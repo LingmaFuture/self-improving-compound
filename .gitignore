@@ -1,2 +1,11 @@
+# Local research/reference material; keep locally, never commit.
+.reference/
+.sisyphus/
+squashfs-root
+AppDir/
+
+# Generated files
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.DS_Store
