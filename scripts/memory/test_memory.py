@@ -12,7 +12,7 @@ import unittest
 from memory.types import (
     Chunk, Metadata, SourceKind, SourceRef, chunk_id, approx_token_count,
 )
-from memory.store import MemoryStore, ListChunksQuery
+from memory.store import MemoryStore, ListChunksQuery, SearchChunksQuery
 from memory.chunker import ChunkerInput, ChunkerOptions, chunk_markdown
 from memory.ingest import ingest_markdown
 
@@ -130,6 +130,22 @@ class TestStoreSchema(unittest.TestCase):
         results = self.store.list_chunks(ListChunksQuery(limit=10))
         assert len(results) == 1
 
+    def test_search_chunks_uses_fts_or_fallback(self):
+        ts = datetime.datetime(2026, 5, 17, tzinfo=datetime.timezone.utc)
+        meta = Metadata.point_in_time(SourceKind.DOCUMENT, "doc-search", "user1", ts)
+        chunk = Chunk(
+            id=chunk_id(SourceKind.DOCUMENT, "doc-search", 0, "Phoenix migration runbook"),
+            content="Phoenix migration runbook",
+            metadata=meta,
+            token_count=3,
+            seq_in_source=0,
+            created_at=ts,
+        )
+        self.store.upsert_chunks([chunk])
+        results = self.store.search_chunks(SearchChunksQuery(query="Phoenix", limit=5))
+        assert len(results) == 1
+        assert results[0][0].id == chunk.id
+
     def test_source_dedup(self):
         assert not self.store.is_source_ingested(SourceKind.CHAT, "chan-1")
         assert self.store.claim_source_ingest(SourceKind.CHAT, "chan-1", 5)
@@ -166,6 +182,35 @@ class TestStoreSchema(unittest.TestCase):
         assert self.store.count_jobs(status="running") == 0
         assert self.store.count_jobs(status="completed") == 1
 
+    def test_job_claim_is_atomic_across_store_instances(self):
+        job_id = self.store.enqueue_job(MemoryStore.JobRow(
+            kind="test_job", payload_json='{"a":1}',
+        ))
+        assert job_id > 0
+
+        other = MemoryStore(self.tmp.name)
+        try:
+            first = other.claim_next_job()
+            second = self.store.claim_next_job()
+        finally:
+            other.close()
+
+        assert first is not None
+        assert first["id"] == job_id
+        assert second is None
+        assert self.store.count_jobs(status="running") == 1
+
+    def test_job_dedupe_key_suppresses_active_duplicates(self):
+        first = self.store.enqueue_job(MemoryStore.JobRow(
+            kind="extract_chunk", payload_json='{"a":1}', dedupe_key="extract:abc",
+        ))
+        second = self.store.enqueue_job(MemoryStore.JobRow(
+            kind="extract_chunk", payload_json='{"a":1}', dedupe_key="extract:abc",
+        ))
+        assert first > 0
+        assert second == 0
+        assert self.store.count_jobs(status="pending") == 1
+
     def test_job_failure_retries_then_fails(self):
         job_id = self.store.enqueue_job(MemoryStore.JobRow(
             kind="test_job", payload_json="{}", max_retries=0,
@@ -187,6 +232,20 @@ class TestStoreSchema(unittest.TestCase):
 
         self.store.set_chunk_lifecycle(cid, "buffered")
         assert self.store.get_chunk_lifecycle(cid) == "buffered"
+
+    def test_entity_index_upsert_dedupes_node(self):
+        row = MemoryStore.EntityIndexRow(
+            entity_id="pattern-key:test",
+            node_id="chunk-1",
+            node_kind="chunk",
+            entity_kind="pattern_key",
+            surface="test",
+            score=1.0,
+            timestamp_ms=1,
+        )
+        self.store.upsert_entity_index([row, row])
+        rows = self.store.query_entity_index("pattern-key:test")
+        assert len(rows) == 1
 
 
 class TestChunker(unittest.TestCase):

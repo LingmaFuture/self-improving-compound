@@ -351,6 +351,29 @@ class TestSearchJsonFormat(unittest.TestCase):
             exported = json.loads(export_out.getvalue())
             assert "Recurrence-Count**: 2" in exported[0]["content"]
 
+    def test_auto_entity_extraction_indexes_namespaced_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args_init = type("Args", (), {"root": tmp, "local_root": None})()
+            L.cmd_init(args_init)
+            store = L.get_store(tmp)
+            with store:
+                entry_id = L._ingest_entry(
+                    store,
+                    "LRN",
+                    "Regenerate client for api:openapi",
+                    "Run make generate-client after editing /repo/openapi.yaml",
+                    "tooling:api-client-gen",
+                    "project:test",
+                    force=True,
+                )
+                chunk = L._find_chunk_by_entry_id(store, entry_id or "")
+                assert chunk is not None
+                L._index_extracted_entities(store, chunk)
+                rows = store.query_entity_index("api:openapi")
+                assert len(rows) == 1
+                path_rows = store.query_entity_index("path:/repo/openapi.yaml")
+                assert len(path_rows) == 1
+
 
 class TestSQLiteFirstPromoteEdit(unittest.TestCase):
     def test_promote_finds_sqlite_entry(self):
@@ -366,6 +389,53 @@ class TestSQLiteFirstPromoteEdit(unittest.TestCase):
             promoted = Path(tmp, "AGENTS.md").read_text(encoding="utf-8")
             assert entry_id in promoted
             assert "Status**: promoted" in promoted
+
+    def test_shared_learning_root_promotes_into_workspace_root(self):
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as shared:
+            args_init = type("Args", (), {"root": workspace, "local_root": None, "learning_root": shared, "local_learning_root": None})()
+            L.cmd_init(args_init)
+            store = L.get_store(workspace, shared)
+            with store:
+                entry_id = L._ingest_entry(store, "LRN", "shared promote", "details", "test:shared-promote", "", force=True)
+
+            args = SimpleNamespace(root=workspace, local_root=None, learning_root=shared, local_learning_root=None, entry_id=entry_id, to="AGENTS.md")
+            L.cmd_promote(args)
+
+            assert Path(workspace, "AGENTS.md").exists()
+            assert not Path(shared, "AGENTS.md").exists()
+            assert entry_id in Path(workspace, "AGENTS.md").read_text(encoding="utf-8")
+
+    def test_maintain_writes_promotion_queue_and_auto_promotes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args_init = type("Args", (), {"root": tmp, "local_root": None})()
+            L.cmd_init(args_init)
+            store = L.get_store(tmp)
+            with store:
+                entry_id = L._ingest_entry(store, "LRN", "queue me", "details", "test:queue", "", force=True)
+                chunk = L._find_chunk_by_entry_id(store, entry_id or "")
+                assert chunk is not None
+                chunk.content = L._replace_or_append_field(chunk.content, "Recurrence-Count", "3")
+                store.upsert_chunks([chunk])
+
+            args = SimpleNamespace(
+                root=tmp,
+                local_root=None,
+                dry_run=False,
+                format="json",
+                auto_promote=True,
+                promotion_target="AGENTS.md",
+            )
+            import io
+            from contextlib import redirect_stdout
+
+            with redirect_stdout(io.StringIO()):
+                L.cmd_maintain(args)
+
+            queue = Path(tmp, "learning", "promotion-queue.json")
+            assert queue.exists()
+            assert '"count": 0' in queue.read_text(encoding="utf-8")
+            promoted = Path(tmp, "AGENTS.md").read_text(encoding="utf-8")
+            assert entry_id in promoted
 
     def test_edit_updates_sqlite_entry(self):
         with tempfile.TemporaryDirectory() as tmp:

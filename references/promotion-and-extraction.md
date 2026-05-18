@@ -12,7 +12,8 @@ The `maintain` subcommand enforces the human-like memory lifecycle integrated fr
    - `buffered` entries unused for 90+ days → recommend `sealed`
    - Entries with `Recurrence-Count >= 3` or repeated searches → flag for project-memory promotion
 3. **Report** in human-readable text or JSON (`--format json`).
-4. **Apply safe moves** only when `--apply` is passed. `--dry-run` is the default.
+4. **Queue promotions** in `learning/promotion-queue.json` so automation has a bounded, explicit handoff instead of an invisible growing backlog.
+5. **Apply safe moves** only when `--apply` is passed. `--dry-run` is the default. Use `--auto-promote` with `--apply` only when the deployment explicitly wants high-recurrence lessons written into workspace memory files.
 
 ### Safety rules
 

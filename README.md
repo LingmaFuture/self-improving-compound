@@ -7,7 +7,7 @@ A portable AgentSkill that turns agent memory from scattered markdown notes into
 ## What it does
 
 - **Captures durable lessons** before the final reply after non-trivial work: user corrections, tool/API gotchas, non-obvious failures, workarounds, and missing capabilities.
-- **Stores execution learnings in SQLite** under `learning/memory_tree/chunks.db`, with search, dedupe, lifecycle status, exports, and human-readable snapshots.
+- **Stores execution learnings in SQLite** under `learning/memory_tree/chunks.db`, with FTS5 search, deterministic entity indexing, dedupe, lifecycle status, exports, and human-readable snapshots.
 - **Keeps facts separate from lessons**: factual continuity goes to `memory/YYYY-MM-DD.md`; reusable prevention rules go to `learning/`.
 - **Audits itself with cron**: light checks, heavy audits, daily factual memory, and post-digest workspace stewardship.
 - **Promotes stable rules** into the right layer: `skills/`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md`, or other root agent state files.
@@ -44,7 +44,7 @@ Real-time capture gate
 
 Memory job worker
   -> process chunk extraction jobs
-  -> update scores, tree buffers, and tree summaries
+  -> update scores, entity index, tree buffers, and tree summaries
   -> run HOT/WARM/COLD lifecycle maintenance
 
 Daily factual memory
@@ -64,6 +64,8 @@ Workspace stewardship
 ```bash
 clawhub install self-improving-compound
 export OPENCLAW_WORKSPACE="/path/to/workspace"
+# Optional: share one learning store across multiple workspace roots.
+# export SELF_IMPROVING_LEARNING_ROOT="$HOME/.openclaw/shared-learning"
 export SELF_IMPROVING_SKILL_DIR="$OPENCLAW_WORKSPACE/skills/self-improving-compound"
 export SELF_IMPROVING_LEARNINGS_CLI="$SELF_IMPROVING_SKILL_DIR/scripts/learnings.py"
 chmod +x "$SELF_IMPROVING_SKILL_DIR"/scripts/*.py "$SELF_IMPROVING_SKILL_DIR"/scripts/*.sh "$SELF_IMPROVING_SKILL_DIR"/hooks/*.sh 2>/dev/null || true
@@ -75,6 +77,7 @@ Full activation checklist:
 
 1. Install files with ClawHub or copy the skill directory.
 2. Set `OPENCLAW_WORKSPACE`, `SELF_IMPROVING_SKILL_DIR`, and optionally `SELF_IMPROVING_LEARNINGS_CLI`.
+   Set `SELF_IMPROVING_LEARNING_ROOT` only when multiple workspaces should share the same lesson store.
 3. Initialize `learning/` with `learnings.py init`.
 4. Add the capture gate to `AGENTS.md` or equivalent agent instructions.
 5. Install/update cron jobs from `scripts/setup-cron.json` and configure delivery.
@@ -87,7 +90,7 @@ See `SKILL.md` for the detailed installation and activation flow.
 Requirements:
 
 - Python 3.8+
-- bash
+- bash. The bundled `.sh` helpers intentionally use bash features; POSIX `sh`-only environments are unsupported unless you call the Python CLI directly.
 - No network access required for the local CLI
 
 ## Quick start
@@ -114,6 +117,8 @@ python3 scripts/learnings.py --root /path/to/workspace log-learning \
 # Review and maintain lifecycle
 python3 scripts/learnings.py --root /path/to/workspace status
 python3 scripts/learnings.py --root /path/to/workspace maintain --apply
+# Optional automation: promote high-recurrence lessons into workspace memory files.
+python3 scripts/learnings.py --root /path/to/workspace maintain --apply --auto-promote
 
 # Process async memory jobs once, or keep a local daemon running
 python3 scripts/learnings.py --root /path/to/workspace process-jobs
@@ -140,7 +145,7 @@ Cron installation is not automatic. Ask your OpenClaw agent:
 
 > Install the self-improving compound cron jobs using `scripts/setup-cron.json` as reference. Check existing cron jobs first and update instead of duplicating.
 
-## Path model
+## Path Model
 
 There are two roots:
 
@@ -151,7 +156,13 @@ There are two roots:
    - `memory/YYYY-MM-DD.md` if daily factual memory is enabled
    - root agent files such as `AGENTS.md`, `MEMORY.md`, `TOOLS.md`, `USER.md`, `SOUL.md`, `HEARTBEAT.md`, `IDENTITY.md`
 
-Never write durable learnings into the installed skill directory. Always pass `--root /path/to/workspace`.
+The learning store can be split from the workspace root with `--learning-root` or `SELF_IMPROVING_LEARNING_ROOT`. In that mode, SQLite, `index.md`, `heartbeat-state.md`, and `promotion-queue.json` live in the shared learning root, while `promote` and `maintain --auto-promote` still write only under the active workspace root.
+
+Never write durable learnings into the installed skill directory. Always pass `--root /path/to/workspace`; add `--learning-root /path/to/shared-learning` only when sharing lessons across projects.
+
+## Architecture Boundary
+
+This is a selective OpenHuman memory-tree port for agent lesson management, not a full content-management clone. Implemented pieces include SQLite storage, FTS search with fallback, deterministic entity extraction, scoring, entity hotness, async jobs, lifecycle maintenance, deterministic tree buffers, and a promotion queue. LLM topic routing and full OpenHuman-style content workflows are intentionally out of scope for this Python layer.
 
 ## Key commands
 
@@ -159,11 +170,14 @@ Never write durable learnings into the installed skill directory. Always pass `-
 python3 scripts/learnings.py --root /path/to/workspace init
 python3 scripts/learnings.py --root /path/to/workspace status --format json
 python3 scripts/learnings.py --root /path/to/workspace search "keyword" --limit 10
+python3 scripts/learnings.py --root /path/to/workspace search "pk:tooling:api-client-gen"
+python3 scripts/learnings.py --root /path/to/workspace search "entity:path:/repo/openapi.yaml"
 python3 scripts/learnings.py --root /path/to/workspace search "keyword" --touch
 python3 scripts/learnings.py --root /path/to/workspace log-error --summary "..." --details "..." --pattern area:stable-key
 python3 scripts/learnings.py --root /path/to/workspace log-feature --summary "..." --details "..." --pattern feature:stable-key
 python3 scripts/learnings.py --root /path/to/workspace process-jobs --format json
 python3 scripts/learnings.py --root /path/to/workspace maintain --apply
+python3 scripts/learnings.py --root /path/to/workspace maintain --apply --auto-promote
 python3 scripts/learnings.py --root /path/to/workspace promote LRN-YYYYMMDD-001 --to AGENTS.md
 bash scripts/daily-memory.sh --root /path/to/workspace
 bash scripts/extract-skill.sh my-new-skill /path/to/workspace

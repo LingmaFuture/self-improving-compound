@@ -5,9 +5,10 @@ Port of OpenHuman's `src/openhuman/memory/tree/ingest.rs` (591 lines → ~100).
 The hot path::
     chunk → persist chunks → enqueue extract jobs
 
-The slower work (admission, tree buffering, sealing, topic routing, daily
-digests) runs through the SQLite-backed jobs queue and is deferred to
-Phases 3-4 of the migration.
+The slower work (scoring, entity extraction, lifecycle transitions, and
+deterministic summary-tree buffering) runs through the SQLite-backed jobs
+queue.  Topic routing is intentionally lightweight: area/pattern-key/source
+tags choose trees without an LLM router.
 """
 
 from __future__ import annotations
@@ -89,12 +90,12 @@ def ingest_markdown(
     store.claim_source_ingest(source_kind, source_id, chunk_count=len(chunks))
     store.upsert_chunks(chunks)
 
-    # Mark each chunk pending_extraction so the async pipeline knows
-    # they are fresh (Phase 3+ will pick these up for scoring/tree ops).
+    # Mark each chunk pending_extraction so the async worker can score,
+    # index, and route it into the deterministic summary tree.
     for c in chunks:
         store.set_chunk_lifecycle(c.id, CHUNK_STATUS_PENDING_EXTRACTION)
 
-    # Enqueue an extract job per chunk (Phase 3+).
+    # Enqueue an extract job per chunk.
     for c in chunks:
         store.enqueue_job(MemoryStore.JobRow(
             kind="extract_chunk",
@@ -104,6 +105,7 @@ def ingest_markdown(
                 "source_id": source_id,
             }),
             priority=0,
+            dedupe_key=f"extract:{c.id}",
         ))
 
     return IngestResult(

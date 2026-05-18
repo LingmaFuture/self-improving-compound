@@ -68,5 +68,7 @@ After solving non-obvious issues or learning project-specific conventions, consi
 
 OpenClaw-specific notes:
 - Set `OPENCLAW_WORKSPACE` so `--root` is optional.
-- Keep `learning/` in the workspace root, not the skill directory.
+- Keep `learning/` in the workspace root by default, not the skill directory.
+- Set `SELF_IMPROVING_LEARNING_ROOT` only when several workspaces should share one lesson store.
 - The `hooks/activator.sh` and `hooks/error-detector.sh` scripts are workspace-root aware.
+- Bundled shell helpers require bash; POSIX `sh`-only hosts should call the Python CLI directly.

@@ -1,5 +1,28 @@
 # Changelog
 
+## 6.2.3 - 2026-05-18
+
+- Release packaging hygiene update: preserve local research/reference artifacts in the canonical working directory while excluding them from Git and ClawHub packages via ignore files.
+- Verified ClawHub publish file collection excludes `.reference/` and `.clawhubignore`.
+
+
+## 6.4.0 - 2026-05-18
+
+- Added `--learning-root` / `SELF_IMPROVING_LEARNING_ROOT` so multiple workspaces can share one SQLite lesson store while promotions still target the active workspace.
+- Made job claiming cross-process safer with an atomic SQLite `BEGIN IMMEDIATE` claim path and row-count guard.
+- Added `promotion-queue.json` plus `maintain --apply --auto-promote` to turn high-recurrence promotion candidates into an explicit, bounded automation queue.
+- Tightened the legacy `log` command so `--type COR` now follows `log-correction` validation and requires `--correct`.
+- Documented the selective OpenHuman boundary, bash requirement, shared-learning path model, and supported capabilities.
+- Added regression coverage for shared learning roots, promotion queue auto-promotion, and cross-store job claiming.
+
+## 6.3.0 - 2026-05-18
+
+- Added a portable Phase 2 memory upgrade: standalone SQLite FTS5 chunk index with LIKE fallback for robust full-text search.
+- Added deterministic lightweight entity extraction for Pattern-Keys, areas, entry IDs, namespaced tokens, email addresses, and durable paths.
+- Added unique entity-index upserts and active job dedupe keys to suppress duplicate extraction/maintenance work.
+- Updated `search` to combine retrieval relevance with memory score and support exact `pk:` / `entity:` lookups.
+- Added regression coverage for FTS search, entity extraction, entity-index dedupe, and job dedupe.
+
 ## 6.2.2 - 2026-05-18
 
 - Expanded `SKILL.md` with a full installation and activation flow: root/env setup, learning-store initialization, capture gate, cron pipeline, hooks, optional daily collector, smoke tests, and common failure fixes.

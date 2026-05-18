@@ -7,7 +7,7 @@
 ## 核心能力
 
 - **最终回复前捕获可复用经验**：用户纠正、工具/API 坑、非显然失败、workaround、缺失能力。
-- **SQLite 作为执行学习源头**：默认写入 `learning/memory_tree/chunks.db`，支持搜索、去重、异步 job、生命周期、导出。
+- **SQLite 作为执行学习源头**：默认写入 `learning/memory_tree/chunks.db`，支持 FTS5 搜索、确定性实体索引、去重、异步 job、生命周期、导出。
 - **事实与教训分层**：事实连续性写入 `memory/YYYY-MM-DD.md`；可复用预防规则写入 `learning/`。
 - **cron 自动审计**：轻量检查、重型审计、每日事实记忆、post-digest workspace steward。
 - **规则逐层沉淀**：稳定规则进入 `skills/`、`AGENTS.md`、`TOOLS.md`、`MEMORY.md` 等长期状态文件。
@@ -42,6 +42,8 @@ Workspace Steward 只能做小而安全的一致性修正：不能重写人格�
 ```bash
 clawhub install self-improving-compound
 export OPENCLAW_WORKSPACE="/path/to/workspace"
+# 可选：多个 workspace 共享同一套经验库。
+# export SELF_IMPROVING_LEARNING_ROOT="$HOME/.openclaw/shared-learning"
 export SELF_IMPROVING_SKILL_DIR="$OPENCLAW_WORKSPACE/skills/self-improving-compound"
 export SELF_IMPROVING_LEARNINGS_CLI="$SELF_IMPROVING_SKILL_DIR/scripts/learnings.py"
 python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" init
@@ -53,7 +55,7 @@ python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" status
 建议 checklist：
 
 1. 安装 skill 文件。
-2. 设置 workspace / skill / CLI 环境变量。
+2. 设置 workspace / skill / CLI 环境变量；只有在多项目共享经验库时才设置 `SELF_IMPROVING_LEARNING_ROOT`。
 3. 初始化 `learning/`。
 4. 把 capture gate 写进 `AGENTS.md` 或等价 agent 指令。
 5. 按 `scripts/setup-cron.json` 安装/更新 cron，并配置投递目标。
@@ -61,7 +63,7 @@ python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" status
 7. 可选：配置 `SELF_IMPROVING_DAILY_COLLECTOR` 提升 Daily Memory Digest 质量。
 8. 做 search / log / export / daily-memory / cron list smoke test。
 
-要求：Python 3.8+、bash。本地 CLI 不需要网络访问。
+要求：Python 3.8+、bash。本地 CLI 不需要网络访问。随包 `.sh` helper 明确依赖 bash；纯 POSIX `sh` 环境不保证可用，可直接调用 Python CLI。
 
 ## 快速开始
 
@@ -74,6 +76,7 @@ python3 scripts/learnings.py --root /path/to/workspace log-learning \
   --pattern cron:session-context
 python3 scripts/learnings.py --root /path/to/workspace process-jobs
 python3 scripts/learnings.py --root /path/to/workspace maintain --apply
+python3 scripts/learnings.py --root /path/to/workspace maintain --apply --auto-promote
 bash scripts/learning-export.sh
 ```
 
@@ -84,6 +87,12 @@ python3 scripts/learnings.py --root /path/to/workspace process-jobs --daemon --m
 ```
 
 worker 会消费 `mem_tree_jobs`，生成 tree buffer/summary，并以 `maintain_lifecycle` job 执行 HOT/WARM/COLD 自动维护。
+
+## 路径模型与架构边界
+
+默认情况下，`--root /path/to/workspace` 会把经验库写到 `/path/to/workspace/learning/`。如果设置 `--learning-root` 或 `SELF_IMPROVING_LEARNING_ROOT`，SQLite、`index.md`、`heartbeat-state.md`、`promotion-queue.json` 会写到共享经验库；`promote` 和 `maintain --auto-promote` 仍然只会写入当前 workspace root 下的 `AGENTS.md`、`TOOLS.md` 等目标文件。
+
+这不是完整复刻 OpenHuman 的内容管理平台，而是选择性移植：SQLite 存储、FTS 检索、实体索引、评分、hotness、异步 job、生命周期维护、确定性 tree buffer、promotion queue 已落地；LLM topic routing 和完整内容管理工作流不在这个 Python 层里承诺。
 
 ## 推荐 cron 管线
 

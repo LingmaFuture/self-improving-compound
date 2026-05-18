@@ -20,6 +20,7 @@ The last two jobs are intentionally separated: the digest writes the daily factu
 - This skill is installed and the agent can read `scripts/setup-cron.json`.
 - The agent has access to the OpenClaw `cron` tool.
 - The user explicitly confirms creation or update of persistent cron jobs.
+- Bash is available for the bundled `.sh` helpers. POSIX `sh`-only hosts should run the Python CLI commands directly instead of these helpers.
 
 ## Steps for the agent
 
@@ -29,6 +30,7 @@ The last two jobs are intentionally separated: the digest writes the daily factu
 
 2. **Resolve runtime paths without hard-coding local machine paths:**
    - `OPENCLAW_WORKSPACE` should point to the workspace root.
+   - `SELF_IMPROVING_LEARNING_ROOT` may point to a shared learning store used by multiple workspaces.
    - `SELF_IMPROVING_SKILL_DIR` may point to the installed skill directory.
    - `SELF_IMPROVING_LEARNINGS_CLI` may point to an explicit `learnings.py`.
    - `SELF_IMPROVING_DAILY_COLLECTOR` may point to an optional daily-context collector command.

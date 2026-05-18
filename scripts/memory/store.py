@@ -53,6 +53,14 @@ class ListChunksQuery:
     lifecycle_status: Optional[str] = None
 
 
+@dataclass
+class SearchChunksQuery:
+    """Full-text chunk search parameters."""
+    query: str
+    limit: int = 20
+    lifecycle_status: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Schema DDL
 # ---------------------------------------------------------------------------
@@ -117,6 +125,15 @@ CREATE TABLE IF NOT EXISTS mem_tree_entity_index (
     is_user                INTEGER NOT NULL DEFAULT 0
 );
 
+DELETE FROM mem_tree_entity_index
+ WHERE rowid NOT IN (
+    SELECT MIN(rowid)
+      FROM mem_tree_entity_index
+     GROUP BY entity_id, node_id, node_kind
+ );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_tree_entity_index_unique
+    ON mem_tree_entity_index(entity_id, node_id, node_kind);
 CREATE INDEX IF NOT EXISTS idx_mem_tree_entity_index_entity
     ON mem_tree_entity_index(entity_id);
 CREATE INDEX IF NOT EXISTS idx_mem_tree_entity_index_node
@@ -215,6 +232,15 @@ CREATE TABLE IF NOT EXISTS mem_tree_ingested_sources (
     chunk_count            INTEGER NOT NULL,
     PRIMARY KEY (source_kind, source_id)
 );
+
+CREATE VIRTUAL TABLE IF NOT EXISTS mem_tree_chunks_fts2 USING fts5(
+    chunk_id UNINDEXED,
+    content,
+    tags,
+    source_id,
+    owner,
+    tokenize='porter unicode61'
+);
 """
 
 
@@ -289,6 +315,61 @@ class MemoryStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=15000")
         self._conn.executescript(_SCHEMA_SQL)
+        self._apply_migrations(self._conn)
+        self._conn.commit()
+
+    def _apply_migrations(self, conn: sqlite3.Connection) -> None:
+        """Apply lightweight additive migrations for existing SQLite stores."""
+        job_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(mem_tree_jobs)").fetchall()
+        }
+        if "dedupe_key" not in job_cols:
+            conn.execute("ALTER TABLE mem_tree_jobs ADD COLUMN dedupe_key TEXT")
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_tree_jobs_dedupe_active
+                   ON mem_tree_jobs(dedupe_key)
+                   WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running')"""
+            )
+        else:
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_tree_jobs_dedupe_active
+                   ON mem_tree_jobs(dedupe_key)
+                   WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running')"""
+            )
+
+        try:
+            conn.execute("DROP TRIGGER IF EXISTS mem_tree_chunks_ai")
+            conn.execute("DROP TRIGGER IF EXISTS mem_tree_chunks_ad")
+            conn.execute("DROP TRIGGER IF EXISTS mem_tree_chunks_au")
+            conn.execute("DROP TABLE IF EXISTS mem_tree_chunks_fts")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                """CREATE VIRTUAL TABLE IF NOT EXISTS mem_tree_chunks_fts2 USING fts5(
+                    chunk_id UNINDEXED,
+                    content,
+                    tags,
+                    source_id,
+                    owner,
+                    tokenize='porter unicode61'
+                )"""
+            )
+            conn.execute("DELETE FROM mem_tree_chunks_fts2")
+            rows = conn.execute(
+                "SELECT id, content, tags_json, source_id, owner FROM mem_tree_chunks"
+            ).fetchall()
+            conn.executemany(
+                """INSERT INTO mem_tree_chunks_fts2
+                   (chunk_id, content, tags, source_id, owner)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [
+                    (r["id"], r["content"], r["tags_json"], r["source_id"], r["owner"])
+                    for r in rows
+                ],
+            )
+        except sqlite3.OperationalError:
+            pass
 
     def close(self) -> None:
         if self._conn is not None:
@@ -354,7 +435,27 @@ class MemoryStore:
                         _to_ms(c.created_at),
                     ),
                 )
+                self._sync_chunk_fts(conn, c)
             return len(chunks)
+
+    def _sync_chunk_fts(self, conn: sqlite3.Connection, chunk: Chunk) -> None:
+        """Synchronize the standalone FTS table for one chunk, if FTS5 exists."""
+        try:
+            conn.execute("DELETE FROM mem_tree_chunks_fts2 WHERE chunk_id = ?", (chunk.id,))
+            conn.execute(
+                """INSERT INTO mem_tree_chunks_fts2
+                   (chunk_id, content, tags, source_id, owner)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    chunk.id,
+                    chunk.content,
+                    json.dumps(chunk.metadata.tags),
+                    chunk.metadata.source_id,
+                    chunk.metadata.owner,
+                ),
+            )
+        except sqlite3.OperationalError:
+            pass
 
     def get_chunk(self, chunk_id: str) -> Optional[Chunk]:
         """Fetch one chunk by id."""
@@ -408,6 +509,60 @@ class MemoryStore:
         with self._tx() as conn:
             rows = conn.execute(sql, params).fetchall()
             return [_row_to_chunk(r) for r in rows]
+
+    def search_chunks(self, query: SearchChunksQuery) -> List[Tuple[Chunk, float]]:
+        """Search chunks using FTS5 when available, falling back to LIKE.
+
+        Returns ``(chunk, rank_score)`` pairs ordered by relevance. Higher score
+        is better; FTS5's lower bm25 rank is inverted into a positive score.
+        """
+        text = (query.query or "").strip()
+        if not text:
+            return []
+        limit = max(1, min(int(query.limit or 20), 1000))
+        with self._tx() as conn:
+            try:
+                conditions = []
+                params: List = [text]
+                if query.lifecycle_status:
+                    conditions.append("c.lifecycle_status = ?")
+                    params.append(query.lifecycle_status)
+                where = "WHERE mem_tree_chunks_fts MATCH ?"
+                if conditions:
+                    where += " AND " + " AND ".join(conditions)
+                sql = f"""SELECT c.id, c.source_kind, c.source_id, c.source_ref, c.owner,
+                                 c.timestamp_ms, c.time_range_start_ms, c.time_range_end_ms,
+                                 c.tags_json, c.content, c.token_count, c.seq_in_source,
+                                 c.created_at_ms,
+                                 bm25(mem_tree_chunks_fts2) AS rank
+                            FROM mem_tree_chunks_fts2
+                            JOIN mem_tree_chunks c ON c.id = mem_tree_chunks_fts2.chunk_id
+                           {where.replace('mem_tree_chunks_fts', 'mem_tree_chunks_fts2')}
+                           ORDER BY rank
+                           LIMIT ?"""
+                params.append(limit)
+                rows = conn.execute(sql, params).fetchall()
+                if rows:
+                    return [(_row_to_chunk(r), 1.0 / (1.0 + abs(float(r["rank"])))) for r in rows]
+            except sqlite3.OperationalError:
+                pass
+
+            pattern = f"%{text.lower()}%"
+            params = [pattern]
+            conditions = ["LOWER(content) LIKE ?"]
+            if query.lifecycle_status:
+                conditions.append("lifecycle_status = ?")
+                params.append(query.lifecycle_status)
+            sql = (
+                "SELECT id, source_kind, source_id, source_ref, owner,"
+                "       timestamp_ms, time_range_start_ms, time_range_end_ms,"
+                "       tags_json, content, token_count, seq_in_source, created_at_ms"
+                "  FROM mem_tree_chunks WHERE " + " AND ".join(conditions)
+                + " ORDER BY timestamp_ms DESC LIMIT ?"
+            )
+            params.append(limit)
+            rows = conn.execute(sql, params).fetchall()
+            return [(_row_to_chunk(r), 0.5) for r in rows]
 
     def count_chunks(self) -> int:
         """Total number of chunks in the store."""
@@ -525,7 +680,14 @@ class MemoryStore:
                     """INSERT INTO mem_tree_entity_index (
                         entity_id, node_id, node_kind, entity_kind,
                         surface, score, timestamp_ms, tree_id, is_user
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(entity_id, node_id, node_kind) DO UPDATE SET
+                        entity_kind = excluded.entity_kind,
+                        surface = excluded.surface,
+                        score = excluded.score,
+                        timestamp_ms = excluded.timestamp_ms,
+                        tree_id = excluded.tree_id,
+                        is_user = excluded.is_user""",
                     (r.entity_id, r.node_id, r.node_kind, r.entity_kind,
                      r.surface, r.score, r.timestamp_ms, r.tree_id, r.is_user),
                 )
@@ -702,6 +864,7 @@ class MemoryStore:
         priority: int = 0
         max_retries: int = 3
         scheduled_at_ms: int = 0
+        dedupe_key: Optional[str] = None
 
     def enqueue_job(self, job: JobRow) -> int:
         now = _now_ms()
@@ -709,49 +872,68 @@ class MemoryStore:
         with self._tx() as conn:
             cur = conn.execute(
                 """INSERT INTO mem_tree_jobs
-                   (kind, payload_json, status, priority, max_retries,
+                   (kind, payload_json, dedupe_key, status, priority, max_retries,
                     created_at_ms, scheduled_at_ms)
-                   VALUES (?, ?, 'pending', ?, ?, ?, ?)""",
-                (job.kind, job.payload_json, job.priority,
+                   VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+                   ON CONFLICT(dedupe_key) WHERE dedupe_key IS NOT NULL
+                       AND status IN ('pending', 'running')
+                   DO NOTHING""",
+                (job.kind, job.payload_json, job.dedupe_key, job.priority,
                  job.max_retries, now, scheduled),
             )
-            return cur.lastrowid  # type: ignore[return-value]
+            if cur.rowcount == 0:
+                return 0
+            return int(cur.lastrowid or 0)
 
     def claim_next_job(self, kinds: Optional[List[str]] = None) -> Optional[Dict]:
         """Claim the highest-priority pending job (atomically)."""
-        with self._tx() as conn:
-            if kinds:
-                placeholders = ",".join("?" for _ in kinds)
-                row = conn.execute(
-                    f"""SELECT id, kind, payload_json, priority, retry_count, max_retries
-                          FROM mem_tree_jobs
-                         WHERE status = 'pending'
-                           AND kind IN ({placeholders})
-                           AND scheduled_at_ms <= ?
-                         ORDER BY priority DESC, scheduled_at_ms
-                         LIMIT 1""",
-                    [*kinds, _now_ms()],
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    """SELECT id, kind, payload_json, priority, retry_count, max_retries
-                         FROM mem_tree_jobs
-                        WHERE status = 'pending'
-                          AND scheduled_at_ms <= ?
-                        ORDER BY priority DESC, scheduled_at_ms
-                        LIMIT 1""",
-                    (_now_ms(),),
-                ).fetchone()
-            if not row:
-                return None
-            job = dict(row)
-            conn.execute(
-                """UPDATE mem_tree_jobs
-                      SET status = 'running', started_at_ms = ?, error = NULL
-                    WHERE id = ? AND status = 'pending'""",
-                (_now_ms(), job["id"]),
-            )
-            return job
+        self.open()
+        assert self._conn is not None
+        conn = self._conn
+        with self._lock:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                now_ms = _now_ms()
+                if kinds:
+                    placeholders = ",".join("?" for _ in kinds)
+                    row = conn.execute(
+                        f"""SELECT id, kind, payload_json, priority, retry_count, max_retries
+                              FROM mem_tree_jobs
+                             WHERE status = 'pending'
+                               AND kind IN ({placeholders})
+                               AND scheduled_at_ms <= ?
+                             ORDER BY priority DESC, scheduled_at_ms
+                             LIMIT 1""",
+                        [*kinds, now_ms],
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        """SELECT id, kind, payload_json, priority, retry_count, max_retries
+                             FROM mem_tree_jobs
+                            WHERE status = 'pending'
+                              AND scheduled_at_ms <= ?
+                            ORDER BY priority DESC, scheduled_at_ms
+                            LIMIT 1""",
+                        (now_ms,),
+                    ).fetchone()
+                if not row:
+                    conn.execute("COMMIT")
+                    return None
+                job = dict(row)
+                cur = conn.execute(
+                    """UPDATE mem_tree_jobs
+                          SET status = 'running', started_at_ms = ?, error = NULL
+                        WHERE id = ? AND status = 'pending'""",
+                    (_now_ms(), job["id"]),
+                )
+                if cur.rowcount != 1:
+                    conn.execute("ROLLBACK")
+                    return None
+                conn.execute("COMMIT")
+                return job
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
 
     def complete_job(self, job_id: int) -> None:
         """Mark a claimed job completed."""

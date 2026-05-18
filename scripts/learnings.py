@@ -29,7 +29,8 @@ Commands:
   export          Export entries as markdown
 
 Global options:
-  --root PATH     Workspace root (default: OPENCLAW_WORKSPACE env, else cwd)
+  --root PATH              Workspace root (default: OPENCLAW_WORKSPACE env, else cwd)
+  --learning-root PATH     Learning store root (default: <workspace>/learning)
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 # OpenHuman memory architecture port
 from memory.store import (
@@ -54,6 +55,7 @@ from memory.store import (
     CHUNK_STATUS_BUFFERED,
     CHUNK_STATUS_SEALED,
     ListChunksQuery,
+    SearchChunksQuery,
     MemoryStore,
 )
 from memory.types import Chunk, Metadata, SourceKind, chunk_id, approx_token_count
@@ -70,6 +72,16 @@ def get_now() -> datetime:
 
 def resolve_root(args: argparse.Namespace) -> Optional[str]:
     return getattr(args, "local_root", None) or args.root
+
+
+def resolve_learning_root(args: argparse.Namespace) -> Optional[str]:
+    return (
+        getattr(args, "local_learning_root", None)
+        or getattr(args, "learning_root", None)
+        or os.environ.get("SELF_IMPROVING_LEARNING_ROOT")
+        or os.environ.get("SELF_IMPROVING_LEARNING_DIR")
+    )
+
 
 SUBDIR_NAME = "learning"
 
@@ -102,6 +114,10 @@ VOLATILE_PATTERNS = [
     re.compile(r'\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b'),
 ]
 
+ENTITY_TOKEN_RE = re.compile(r"\b[a-z][a-z0-9_-]{1,31}:[A-Za-z0-9][A-Za-z0-9._/\-]{1,96}\b")
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+PATH_RE = re.compile(r"(?<![\w.-])(?:/[\w.@%+=:,~\-]+){2,}(?:\.[A-Za-z0-9]+)?")
+
 
 def redact_secrets(text: str) -> str:
     for pattern in SECRET_PATTERNS:
@@ -117,16 +133,23 @@ def check_volatile_patterns(text: str) -> List[str]:
     return warnings
 
 
-def get_base_dir(args_root: Optional[str]) -> Path:
+def get_workspace_root(args_root: Optional[str]) -> Path:
     if args_root:
-        root = Path(args_root).expanduser().resolve()
-    else:
-        env_root = os.environ.get("OPENCLAW_WORKSPACE")
-        if env_root:
-            root = Path(env_root).expanduser().resolve()
-        else:
-            root = Path.cwd().resolve()
-    return root / SUBDIR_NAME
+        return Path(args_root).expanduser().resolve()
+    env_root = os.environ.get("OPENCLAW_WORKSPACE")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    return Path.cwd().resolve()
+
+
+def get_base_dir(args_root: Optional[str], learning_root: Optional[str] = None) -> Path:
+    if learning_root:
+        return Path(learning_root).expanduser().resolve()
+    return get_workspace_root(args_root) / SUBDIR_NAME
+
+
+def get_base_dir_for_args(args: argparse.Namespace) -> Path:
+    return get_base_dir(resolve_root(args), resolve_learning_root(args))
 
 
 def ensure_structure(base_dir: Path) -> None:
@@ -246,18 +269,23 @@ def update_index(base_dir: Path) -> None:
 
 DB_SUBDIR = Path("memory_tree")
 DB_FILE = "chunks.db"
+PROMOTION_QUEUE_FILE = "promotion-queue.json"
 
 
-def get_store(args_root: Optional[str]) -> MemoryStore:
+def get_store(args_root: Optional[str], learning_root: Optional[str] = None) -> MemoryStore:
     """Open the SQLite MemoryStore for the workspace root.
 
     DB lives at ``<base_dir>/memory_tree/chunks.db``, matching the
     OpenHuman convention.  Schema is applied lazily on first access.
     """
-    base_dir = get_base_dir(args_root)
+    base_dir = get_base_dir(args_root, learning_root)
     db_path = base_dir / DB_SUBDIR / DB_FILE
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return MemoryStore(str(db_path))
+
+
+def get_store_for_args(args: argparse.Namespace) -> MemoryStore:
+    return get_store(resolve_root(args), resolve_learning_root(args))
 
 
 def _entry_fingerprint(
@@ -446,13 +474,14 @@ def _compute_entry_score(chunk: Chunk) -> MemoryStore.ScoreRow:
     # maintenance does not confuse freshness with recurrence.
     interaction_weight = 0.0
 
-    # Entity density: pattern-key length ratio
+    # Entity density: Pattern-Key plus deterministic entity extraction signal.
+    extracted_entities = _extract_lightweight_entities(chunk)
     pk_chars = 0
     if has_pk:
         for tag in chunk.metadata.tags:
             if tag.startswith("pattern-key:"):
                 pk_chars = len(tag)
-    entity_density = min(1.0, pk_chars / 200.0) if has_pk else 0.0
+    entity_density = min(1.0, (pk_chars / 200.0) + (len(extracted_entities) / 12.0))
 
     total = (
         tc_signal * 0.20
@@ -495,6 +524,65 @@ def _index_pattern_key(store: MemoryStore, chunk: Chunk, pattern_key: str) -> No
             timestamp_ms=now_ms,
         ),
     ])
+
+
+def _extract_lightweight_entities(chunk: Chunk) -> List[MemoryStore.EntityIndexRow]:
+    """Extract deterministic entities without calling an LLM.
+
+    The extractor is deliberately conservative: explicit Pattern-Keys and
+    areas, entry IDs, namespaced tokens, email addresses, and durable paths.
+    It gives the learning store an entity layer while preserving portability.
+    """
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    rows: Dict[tuple, MemoryStore.EntityIndexRow] = {}
+
+    def add(kind: str, surface: str, score: float = 0.7) -> None:
+        surface = surface.strip().strip(".,;)]}")
+        if not surface:
+            return
+        entity_id = f"{kind}:{surface.lower()}"
+        key = (entity_id, chunk.id, "chunk")
+        rows[key] = MemoryStore.EntityIndexRow(
+            entity_id=entity_id,
+            node_id=chunk.id,
+            node_kind="chunk",
+            entity_kind=kind,
+            surface=surface,
+            score=score,
+            timestamp_ms=now_ms,
+            tree_id=_chunk_tree_route(chunk)["tree_id"],
+        )
+
+    entry_id = _extract_entry_id(chunk)
+    if entry_id:
+        add("entry", entry_id, 1.0)
+
+    for tag in chunk.metadata.tags:
+        if tag.startswith("pattern-key:"):
+            add("pattern-key", tag.split(":", 1)[1], 1.0)
+        elif tag.startswith("area:"):
+            add("area", tag.split(":", 1)[1], 0.85)
+        elif tag in ("LRN", "ERR", "COR", "FTR"):
+            add("type", tag, 0.4)
+
+    for match in EMAIL_RE.finditer(chunk.content):
+        add("email", match.group(0), 0.8)
+    for match in PATH_RE.finditer(chunk.content):
+        value = match.group(0)
+        if not value.startswith("/tmp/"):
+            add("path", value, 0.6)
+    for match in ENTITY_TOKEN_RE.finditer(chunk.content):
+        token = match.group(0)
+        prefix, value = token.split(":", 1)
+        if prefix not in {"http", "https", "mailto"}:
+            add(prefix, value, 0.65)
+
+    return list(rows.values())
+
+
+def _index_extracted_entities(store: MemoryStore, chunk: Chunk) -> int:
+    rows = _extract_lightweight_entities(chunk)
+    return store.upsert_entity_index(rows) if rows else 0
 
 
 def _update_hotness(store: MemoryStore, chunk: Chunk, pattern_key: str) -> None:
@@ -573,6 +661,7 @@ def _maintenance_plan(store: MemoryStore) -> Dict[str, List[Dict[str, Any]]]:
         lifecycle = store.get_chunk_lifecycle(c.id) or CHUNK_STATUS_ADMITTED
         rc = _extract_recurrence_count(c)
         entry_id = _extract_entry_id(c)
+        status = _extract_status(c).strip().lower()
 
         if lifecycle == CHUNK_STATUS_BUFFERED and days_stale >= 90:
             stale_warm.append({
@@ -591,11 +680,13 @@ def _maintenance_plan(store: MemoryStore) -> Dict[str, List[Dict[str, Any]]]:
                 "target": "warm",
             })
 
-        if rc >= 3:
+        if rc >= 3 and status not in {"promoted", "promoted_to_skill", "resolved", "wont_fix"}:
             promote_candidates.append({
                 "id": entry_id,
                 "chunk_id": c.id,
                 "recurrence_count": rc,
+                "summary": _chunk_summary_text(c, max_chars=180),
+                "suggested_target": _suggest_promotion_target(c),
             })
 
     return {
@@ -623,6 +714,7 @@ def _process_extract_chunk_job(store: MemoryStore, payload: Dict[str, Any]) -> D
 
     score = _compute_entry_score(chunk)
     store.upsert_scores([score])
+    entity_count = _index_extracted_entities(store, chunk)
 
     lifecycle = store.get_chunk_lifecycle(chunk.id)
     if lifecycle in (None, CHUNK_STATUS_PENDING_EXTRACTION):
@@ -681,7 +773,12 @@ def _process_extract_chunk_job(store: MemoryStore, payload: Dict[str, Any]) -> D
         created_at_ms=now_ms,
     ))
 
-    return {"chunk_id": chunk.id, "tree_id": tree_id, "summary": summary_text}
+    return {
+        "chunk_id": chunk.id,
+        "tree_id": tree_id,
+        "summary": summary_text,
+        "entities_indexed": entity_count,
+    }
 
 
 def _process_lifecycle_job(
@@ -726,6 +823,7 @@ def _ensure_lifecycle_job(store: MemoryStore) -> None:
             payload_json=json.dumps({"dry_run": False}),
             priority=-50,
             max_retries=1,
+            dedupe_key="maintain:lifecycle",
         ))
 
 
@@ -780,6 +878,7 @@ def _ingest_entry(
     if pattern_key:
         _index_pattern_key(store, chunk, pattern_key)
         _update_hotness(store, chunk, pattern_key)
+    _index_extracted_entities(store, chunk)
 
     # Track area as entity too
     if area:
@@ -804,6 +903,7 @@ def _ingest_entry(
             "source_id": source_id,
         }),
         priority=0,
+        dedupe_key=f"extract:{chunk.id}",
     ))
 
     return entry_id
@@ -844,10 +944,10 @@ def _render_chunk_as_markdown(chunk: Chunk) -> str:
 
 
 def cmd_init(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
     # Initialise the SQLite store
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     store.open()
     store.close()
     print(f"[init] Learning structure ready at: {base_dir}")
@@ -855,11 +955,11 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
 
     fmt = getattr(args, "format", "text") or "text"
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
         # Stats from all 9 tables
         total_chunks = store.count_chunks()
@@ -910,6 +1010,8 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     if fmt == "json":
         out: Dict[str, Any] = {
+            "workspace_root": str(get_workspace_root(resolve_root(args))),
+            "learning_root": str(base_dir),
             "total_chunks": total_chunks,
             "entries_by_type": type_counts,
             "pattern_keys": pk_count,
@@ -922,11 +1024,23 @@ def cmd_status(args: argparse.Namespace) -> None:
                 for e in top_entities
             ],
             "pending_jobs": pending_jobs,
+            "capabilities": {
+                "sqlite_store": True,
+                "fts_search": True,
+                "entity_index": True,
+                "async_jobs": True,
+                "summary_tree_buffers": True,
+                "promotion_queue": True,
+                "topic_routing": "deterministic_area_or_pattern_key",
+                "llm_scoring": False,
+            },
         }
         print(json.dumps(out, indent=2))
         return
 
     print("[status] Memory Status (SQLite-backed)")
+    print(f"  Workspace    : {get_workspace_root(resolve_root(args))}")
+    print(f"  Learning Root: {base_dir}")
     print(f"  Chunks       : {total_chunks}")
     print(f"  Avg Score    : {avg_score:.3f}")
     print(f"  Pattern-Keys : {pk_count}")
@@ -950,7 +1064,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 
 def cmd_search(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     query = args.query or ""
     if not query:
         print("[search] Error: query required", file=sys.stderr)
@@ -958,12 +1072,16 @@ def cmd_search(args: argparse.Namespace) -> None:
 
     fmt = getattr(args, "format", "text") or "text"
 
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
-        # Search via entity index first (fast pattern-key lookup)
-        pattern_key = query if query.startswith("pk:") else None
-        if pattern_key:
-            entity_id = f"pattern-key:{pattern_key[3:]}"
+        indexed_scores: Dict[str, float] = {}
+        # Search via entity index first for exact Pattern-Key / entity lookup.
+        if query.startswith("pk:") or query.startswith("entity:"):
+            entity_id = (
+                f"pattern-key:{query[3:]}"
+                if query.startswith("pk:")
+                else query.split(":", 1)[1]
+            )
             idx_rows = store.query_entity_index(entity_id=entity_id)
             chunk_ids = [r.node_id for r in idx_rows]
             chunks = []
@@ -971,21 +1089,21 @@ def cmd_search(args: argparse.Namespace) -> None:
                 c = store.get_chunk(cid)
                 if c:
                     chunks.append(c)
+                    indexed_scores[c.id] = 0.95
         else:
-            # Full-text chunk search: list all and filter
+            # Full-text chunk search via FTS5, with LIKE fallback in the store.
             limit = args.limit or 20
-            all_chunks = store.list_chunks(ListChunksQuery(limit=1000))
-            query_lower = query.lower()
-            chunks = [
-                c for c in all_chunks
-                if query_lower in c.content.lower()
-            ][:limit]
+            matches = store.search_chunks(SearchChunksQuery(query=query, limit=limit))
+            chunks = [c for c, _ in matches]
+            indexed_scores = {c.id: score for c, score in matches}
 
         # Compute scores for ordering
         scored = []
         for c in chunks:
             score_row = store.get_score(c.id)
-            score_val = score_row.total if score_row else 0.5
+            memory_score = score_row.total if score_row else 0.5
+            search_score = indexed_scores.get(c.id, 0.5)
+            score_val = round((memory_score * 0.55) + (search_score * 0.45), 4)
             # Extract summary from content for display
             summary_match = re.search(r"\*\*Summary\*\*:\s*(.+)", c.content)
             summary_text = summary_match.group(1) if summary_match else c.content[:80]
@@ -1049,6 +1167,15 @@ def append_block_to_file(path: Path, block_text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def append_block_to_file_once(path: Path, block_text: str, marker: str) -> bool:
+    """Append a promoted block unless its stable entry marker is already present."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and marker and marker in path.read_text(encoding="utf-8"):
+        return False
+    append_block_to_file(path, block_text)
+    return True
+
+
 def remove_block_from_file(path: Path, block_text: str) -> None:
     if not path.exists():
         return
@@ -1065,6 +1192,87 @@ def remove_block_from_file(path: Path, block_text: str) -> None:
         new_text += "\n\n" + after
     new_text = new_text.rstrip() + "\n"
     path.write_text(new_text, encoding="utf-8")
+
+
+def _suggest_promotion_target(chunk: Chunk, override: str = "") -> str:
+    if override:
+        return override
+    tags = set(chunk.metadata.tags)
+    if "FTR" in tags:
+        return "TOOLS.md"
+    return "AGENTS.md"
+
+
+def _resolve_promotion_target(workspace_root: Path, target_file: str) -> Path:
+    target_path = (workspace_root / target_file).resolve()
+    try:
+        target_path.relative_to(workspace_root)
+    except ValueError as e:
+        raise ValueError(f"target must stay under workspace root: {target_file}") from e
+    return target_path
+
+
+def _promote_chunk(
+    store: MemoryStore,
+    workspace_root: Path,
+    chunk: Chunk,
+    target_file: str,
+) -> Dict[str, Any]:
+    entry_id = _extract_entry_id(chunk)
+    target_path = _resolve_promotion_target(workspace_root, target_file)
+
+    chunk.content = _replace_or_append_field(chunk.content, "Status", "promoted")
+    chunk.content = _replace_or_append_field(chunk.content, "Promoted-To", target_file)
+    chunk.metadata.tags = [t for t in chunk.metadata.tags if not t.startswith("status:")]
+    chunk.metadata.tags.append("status:promoted")
+
+    promoted_text = _render_chunk_as_markdown(chunk).rstrip()
+    appended = append_block_to_file_once(target_path, promoted_text, entry_id)
+
+    store.upsert_chunks([chunk])
+    store.set_chunk_lifecycle(chunk.id, CHUNK_STATUS_SEALED)
+    return {
+        "id": entry_id,
+        "chunk_id": chunk.id,
+        "target": target_file,
+        "appended": appended,
+    }
+
+
+def _write_promotion_queue(
+    base_dir: Path,
+    store: MemoryStore,
+    candidates: List[Dict[str, Any]],
+    target_override: str = "",
+) -> List[Dict[str, Any]]:
+    generated_at = get_now().isoformat()
+    records: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    for item in candidates:
+        chunk = store.get_chunk(item["chunk_id"])
+        if chunk is None:
+            continue
+        entry_id = item["id"]
+        if entry_id in seen:
+            continue
+        seen.add(entry_id)
+        records.append({
+            "id": entry_id,
+            "chunk_id": chunk.id,
+            "summary": item.get("summary") or _chunk_summary_text(chunk, max_chars=180),
+            "recurrence_count": item.get("recurrence_count", _extract_recurrence_count(chunk)),
+            "suggested_target": _suggest_promotion_target(chunk, target_override),
+            "status": _extract_status(chunk),
+            "queued_at": generated_at,
+        })
+
+    queue_path = base_dir / PROMOTION_QUEUE_FILE
+    queue_path.write_text(json.dumps({
+        "generated_at": generated_at,
+        "count": len(records),
+        "items": records,
+    }, indent=2), encoding="utf-8")
+    return records
 
 
 
@@ -1093,7 +1301,7 @@ def _validate_pattern_key(pattern_key: str) -> None:
 
 
 def cmd_log_correction(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
 
     summary = redact_secrets(args.summary or "")
@@ -1113,7 +1321,7 @@ def cmd_log_correction(args: argparse.Namespace) -> None:
     if not _do_volatile_check(search_term, args.force):
         return
 
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
         details = f"What I got wrong: {summary}\nCorrect answer: {correct}"
         entry_id = _ingest_entry(
@@ -1127,7 +1335,7 @@ def cmd_log_correction(args: argparse.Namespace) -> None:
 
 
 def cmd_log_learning(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
 
     summary = redact_secrets(args.summary or "")
@@ -1144,7 +1352,7 @@ def cmd_log_learning(args: argparse.Namespace) -> None:
     if not _do_volatile_check(search_term, args.force):
         return
 
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
         entry_id = _ingest_entry(
             store, "LRN", summary, details, pattern_key, area, force=args.force,
@@ -1157,7 +1365,7 @@ def cmd_log_learning(args: argparse.Namespace) -> None:
 
 
 def cmd_log_error(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
 
     summary = redact_secrets(args.summary or "")
@@ -1174,7 +1382,7 @@ def cmd_log_error(args: argparse.Namespace) -> None:
     if not _do_volatile_check(search_term, args.force):
         return
 
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
         entry_id = _ingest_entry(
             store, "ERR", summary, details, pattern_key, area, force=args.force,
@@ -1187,7 +1395,7 @@ def cmd_log_error(args: argparse.Namespace) -> None:
 
 
 def cmd_log_feature(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
 
     summary = redact_secrets(args.summary or "")
@@ -1204,7 +1412,7 @@ def cmd_log_feature(args: argparse.Namespace) -> None:
     if not _do_volatile_check(search_term, args.force):
         return
 
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
         entry_id = _ingest_entry(
             store, "FTR", summary, details, pattern_key, area, force=args.force,
@@ -1217,7 +1425,7 @@ def cmd_log_feature(args: argparse.Namespace) -> None:
 
 
 def cmd_log(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
 
     log_type = (args.type or "LRN").upper()
@@ -1230,8 +1438,14 @@ def cmd_log(args: argparse.Namespace) -> None:
     if not content:
         print("[log] Error: content required", file=sys.stderr)
         sys.exit(1)
+    if log_type not in ID_PREFIXES:
+        print("[log] Error: --type must be one of COR/LRN/FTR/ERR", file=sys.stderr)
+        sys.exit(1)
+    if log_type == "COR" and not correct:
+        print("[log] Error: --correct required for --type COR", file=sys.stderr)
+        sys.exit(1)
 
-    search_term = f"{content} {pattern_key}".strip()
+    search_term = f"{content} {correct} {pattern_key}".strip()
     if not _do_volatile_check(search_term, args.force):
         return
 
@@ -1243,7 +1457,7 @@ def cmd_log(args: argparse.Namespace) -> None:
         entry_type = prefix
         details = content
 
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
         entry_id = _ingest_entry(
             store, entry_type, content, details, pattern_key, area, force=args.force,
@@ -1324,19 +1538,38 @@ def _remove_entries_from_text(text: str, entries_to_remove: List[Dict[str, Any]]
 
 
 def cmd_maintain(args: argparse.Namespace) -> None:
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
 
     dry_run = getattr(args, "dry_run", True)
     fmt = getattr(args, "format", "text") or "text"
+    auto_promote = bool(getattr(args, "auto_promote", False))
+    promotion_target = getattr(args, "promotion_target", "") or ""
+    auto_promoted: List[Dict[str, Any]] = []
 
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
         results = _maintenance_plan(store)
         if not dry_run:
             _apply_maintenance_plan(store, results)
+            if auto_promote:
+                workspace_root = get_workspace_root(resolve_root(args))
+                for candidate in results["promote_candidates"]:
+                    chunk = store.get_chunk(candidate["chunk_id"])
+                    if chunk is None:
+                        continue
+                    target = _suggest_promotion_target(chunk, promotion_target)
+                    auto_promoted.append(_promote_chunk(store, workspace_root, chunk, target))
+                if auto_promoted:
+                    results = _maintenance_plan(store)
 
         _update_heartbeat_state(base_dir, results, dry_run)
+        queued_promotions = _write_promotion_queue(
+            base_dir,
+            store,
+            results["promote_candidates"],
+            promotion_target,
+        )
 
         if fmt == "json":
             print(json.dumps({
@@ -1349,6 +1582,8 @@ def cmd_maintain(args: argparse.Namespace) -> None:
                     for r in results["stale_warm"]
                 ],
                 "promote_candidates": results["promote_candidates"],
+                "promotions_queued": queued_promotions,
+                "auto_promoted": auto_promoted,
                 "insufficient_metadata": results["insufficient_metadata"],
             }, indent=2))
             return
@@ -1362,7 +1597,7 @@ def cmd_maintain(args: argparse.Namespace) -> None:
         stale_warm = results["stale_warm"]
         promote_candidates = results["promote_candidates"]
         insufficient_metadata = results["insufficient_metadata"]
-        has_any = bool(stale_hot or stale_warm or promote_candidates or insufficient_metadata)
+        has_any = bool(stale_hot or stale_warm or promote_candidates or insufficient_metadata or auto_promoted)
 
         if fmt == "text":
             if stale_hot:
@@ -1376,7 +1611,13 @@ def cmd_maintain(args: argparse.Namespace) -> None:
             if promote_candidates:
                 print("Promotion candidates:")
                 for r in promote_candidates:
-                    print(f"  - {r['id']}: Recurrence-Count={r['recurrence_count']}")
+                    print(f"  - {r['id']}: Recurrence-Count={r['recurrence_count']} -> {r['suggested_target']}")
+                print(f"  queued: {base_dir / PROMOTION_QUEUE_FILE}")
+            if auto_promoted:
+                print("Auto-promoted:")
+                for r in auto_promoted:
+                    suffix = "" if r["appended"] else " (already present)"
+                    print(f"  - {r['id']}: {r['target']}{suffix}")
             if insufficient_metadata:
                 print("Insufficient metadata:")
                 for r in insufficient_metadata:
@@ -1387,7 +1628,7 @@ def cmd_maintain(args: argparse.Namespace) -> None:
 
 def cmd_promote(args: argparse.Namespace) -> None:
     """Promote an entry from its current tier to a target memory file."""
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
     entry_id = args.entry_id
     target_file = args.to or ""
@@ -1395,48 +1636,30 @@ def cmd_promote(args: argparse.Namespace) -> None:
         print("[promote] Error: --to TARGET is required", file=sys.stderr)
         sys.exit(1)
 
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
         chunk = _find_chunk_by_entry_id(store, entry_id)
         if not chunk:
             print(f"[promote] Entry {entry_id} not found", file=sys.stderr)
             sys.exit(1)
 
-        workspace_root = base_dir
-        subdir_parts = Path(SUBDIR_NAME).parts
-        for _ in subdir_parts:
-            workspace_root = workspace_root.parent
-        workspace_root = workspace_root.resolve()
-        target_path = (workspace_root / target_file).resolve()
+        workspace_root = get_workspace_root(resolve_root(args))
         try:
-            target_path.relative_to(workspace_root)
-        except ValueError:
-            print(f"[promote] Error: target must stay under workspace root: {target_file}", file=sys.stderr)
+            result = _promote_chunk(store, workspace_root, chunk, target_file)
+        except ValueError as e:
+            print(f"[promote] Error: {e}", file=sys.stderr)
             sys.exit(1)
 
-        if not target_path.parent.exists():
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-
-        chunk.content = _replace_or_append_field(chunk.content, "Status", "promoted")
-        chunk.content = _replace_or_append_field(chunk.content, "Promoted-To", target_file)
-        chunk.metadata.tags = [t for t in chunk.metadata.tags if not t.startswith("status:")]
-        chunk.metadata.tags.append("status:promoted")
-
-        promoted_text = _render_chunk_as_markdown(chunk).rstrip()
-        append_block_to_file(target_path, promoted_text)
-
-        store.upsert_chunks([chunk])
-        store.set_chunk_lifecycle(chunk.id, CHUNK_STATUS_SEALED)
-
-    print(f"[promote] Promoted {_extract_entry_id(chunk)} to {target_file}")
+    suffix = "" if result["appended"] else " (already present)"
+    print(f"[promote] Promoted {result['id']} to {target_file}{suffix}")
     update_index(base_dir)
 
 
 def cmd_export(args: argparse.Namespace) -> None:
     """Export all entries as human-readable markdown (backed by SQLite)."""
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     fmt = getattr(args, "format", "text") or "text"
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
         chunks = store.list_chunks(ListChunksQuery(limit=10000))
 
@@ -1474,7 +1697,7 @@ _SOURCE_KIND_MAP = {
 
 def cmd_ingest(args: argparse.Namespace) -> None:
     """Ingest external content through the full chunker pipeline."""
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
 
     kind = _SOURCE_KIND_MAP.get((args.kind or "").lower())
@@ -1508,7 +1731,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         tags=args.tags.split(",") if args.tags else [],
     )
 
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
         result = ingest_markdown(
             store,
@@ -1535,7 +1758,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 
 def cmd_process_jobs(args: argparse.Namespace) -> None:
     """Run the SQLite-backed memory job worker."""
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
 
     fmt = getattr(args, "format", "text") or "text"
@@ -1552,7 +1775,7 @@ def cmd_process_jobs(args: argparse.Namespace) -> None:
     failed = 0
     results: List[Dict[str, Any]] = []
 
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     try:
         with store:
             if include_maintenance and (kinds is None or "maintain_lifecycle" in kinds):
@@ -1588,6 +1811,7 @@ def cmd_process_jobs(args: argparse.Namespace) -> None:
                             priority=-50,
                             max_retries=1,
                             scheduled_at_ms=int(get_now().timestamp() * 1000) + maintenance_interval_ms,
+                            dedupe_key="maintain:lifecycle",
                         ))
                 except Exception as e:
                     item["status"] = "failed"
@@ -1626,7 +1850,7 @@ def cmd_process_jobs(args: argparse.Namespace) -> None:
 
 def cmd_edit(args: argparse.Namespace) -> None:
     """Edit metadata of an existing entry in-place."""
-    base_dir = get_base_dir(resolve_root(args))
+    base_dir = get_base_dir_for_args(args)
     ensure_structure(base_dir)
     entry_id = args.entry_id
     new_status = getattr(args, "status", None)
@@ -1637,7 +1861,7 @@ def cmd_edit(args: argparse.Namespace) -> None:
         print("[edit] Error: at least one of --status, --last-seen, --recurrence is required", file=sys.stderr)
         sys.exit(1)
 
-    store = get_store(resolve_root(args))
+    store = get_store_for_args(args)
     with store:
         chunk = _find_chunk_by_entry_id(store, entry_id)
         if not chunk:
@@ -1720,7 +1944,10 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Environment:
-  OPENCLAW_WORKSPACE    Default workspace root if --root is not provided.
+  OPENCLAW_WORKSPACE              Default workspace root if --root is not provided.
+  SELF_IMPROVING_LEARNING_ROOT    Shared learning store directory. When set,
+                                  SQLite/index/queue files live here instead of
+                                  <workspace>/learning.
 
 Examples:
   %(prog)s --root /path/to/workspace init
@@ -1738,6 +1965,11 @@ Examples:
         default=None,
         help="Workspace root (default: OPENCLAW_WORKSPACE env, else current directory)",
     )
+    parser.add_argument(
+        "--learning-root",
+        default=None,
+        help="Learning store directory (default: SELF_IMPROVING_LEARNING_ROOT env, else <workspace>/learning)",
+    )
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1747,6 +1979,12 @@ Examples:
             dest="local_root",
             default=None,
             help="Workspace root (overrides global --root)",
+        )
+        parser.add_argument(
+            "--learning-root",
+            dest="local_learning_root",
+            default=None,
+            help="Learning store directory (overrides global --learning-root)",
         )
 
     p_init = sub.add_parser("init", help="Initialize learning/ structure")
@@ -1766,7 +2004,7 @@ Examples:
     p_search.add_argument("--touch", action="store_true", help="Record matching entries as reused")
     p_search.set_defaults(func=cmd_search)
 
-    p_log = sub.add_parser("log", help="Log a learning (backward-compatible)")
+    p_log = sub.add_parser("log", help="Legacy alias for log-correction/log-learning/log-error/log-feature")
     _add_root(p_log)
     p_log.add_argument("content", nargs="?", help="Learning content")
     p_log.add_argument("--type", "-t", default="LRN", help="Entry type (COR/LRN/FTR/ERR)")
@@ -1817,6 +2055,10 @@ Examples:
     p_maintain.add_argument("--apply", dest="dry_run", action="store_false", help="Apply moves (default is dry-run)")
     p_maintain.add_argument("--dry-run", dest="dry_run", action="store_true", default=True, help="Show what would be done without applying")
     p_maintain.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+    p_maintain.add_argument("--auto-promote", action="store_true",
+                            help="With --apply, promote queued candidates into workspace memory files")
+    p_maintain.add_argument("--promotion-target", default="",
+                            help="Override the suggested promotion target file for maintain --auto-promote")
     p_maintain.set_defaults(func=cmd_maintain)
 
     p_promote = sub.add_parser("promote", help="Promote an entry to a target memory file")

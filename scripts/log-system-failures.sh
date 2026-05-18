@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="${OPENCLAW_WORKSPACE:-$PWD}"
+LEARNING_ROOT="${SELF_IMPROVING_LEARNING_ROOT:-${SELF_IMPROVING_LEARNING_DIR:-$ROOT/learning}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DIR="${SELF_IMPROVING_SKILL_DIR:-$(dirname "$SCRIPT_DIR")}"
 LEARNINGS_CLI="${SELF_IMPROVING_LEARNINGS_CLI:-$SKILL_DIR/scripts/learnings.py}"
-LOG="$ROOT/learning/system-failure-audit.log"
-mkdir -p "$ROOT/learning"
+LOG="$LEARNING_ROOT/system-failure-audit.log"
+mkdir -p "$LEARNING_ROOT"
 {
   echo "# system failure audit $(date -Is)"
   if command -v openclaw >/dev/null 2>&1; then

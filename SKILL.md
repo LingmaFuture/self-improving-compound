@@ -3,7 +3,7 @@ name: self-improving-compound
 description: "Agent memory and self-improvement system. Replaces naive file-based agent memory with a structured SQLite learning engine: capture corrections, errors, and reusable lessons during active work, audit session history for missed learnings via isolated cron jobs, and promote proven rules into skills and agent instructions. 3+7 co-evolution model — 3 state directories (`memory/`, `learning/`, `skills/`) plus 7 root Markdown control-plane files (`AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `TOOLS.md`, `USER.md`) improve together. Adds daily factual memory and workspace stewardship loops. Python 3.8+ CLI with bash hooks. Use for: logging non-obvious failures, user corrections, tool/API gotchas, or missing capabilities before the final reply. Use for: setting up automated cron-based audit pipelines that catch what real-time capture misses. Do not use for trivial typos or routine noise."
 compatibility: "Portable Agent Skills format. Core workflow is agent-agnostic. Bundled helpers require Python 3.8+; hook helpers require bash. No network access is required."
 metadata:
-  version: "6.2.2"
+  version: "6.2.3"
   original_slug: "self-improving-compound"
   category: "memory-system"
   author: "Hybrid adaptation from actual-self-improvement, self-improving-compound, OpenHuman memory-tree, and Hermes Agent architecture | Contact: rockwaychen@gmail.com | GitHub: LingmaFuture"
@@ -43,6 +43,9 @@ You must distinguish two roots:
 # Workspace root: where memory/, learning/, AGENTS.md, etc. live
 export OPENCLAW_WORKSPACE="/path/to/workspace"
 
+# Optional shared lesson store for multiple workspace roots
+# export SELF_IMPROVING_LEARNING_ROOT="$HOME/.openclaw/shared-learning"
+
 # Skill root: where this skill was installed
 export SELF_IMPROVING_SKILL_DIR="$OPENCLAW_WORKSPACE/skills/self-improving-compound"
 export SELF_IMPROVING_LEARNINGS_CLI="$SELF_IMPROVING_SKILL_DIR/scripts/learnings.py"
@@ -56,7 +59,7 @@ export SELF_IMPROVING_SKILL_DIR="$OPENCLAW_WORKSPACE/skills/self-improving-compo
 export SELF_IMPROVING_LEARNINGS_CLI="$SELF_IMPROVING_SKILL_DIR/scripts/learnings.py"
 ```
 
-Do not write durable learnings into the skill directory. `learning/` belongs under the workspace root.
+Do not write durable learnings into the skill directory. By default `learning/` belongs under the workspace root; use `SELF_IMPROVING_LEARNING_ROOT` or `--learning-root` only when several workspaces should share one lesson store.
 
 ### Phase 1 — Install files
 
@@ -67,6 +70,8 @@ chmod +x scripts/*.py scripts/*.sh hooks/*.sh 2>/dev/null || true
 ```
 
 If the skill is copied manually, set `SELF_IMPROVING_SKILL_DIR` to the copied directory.
+
+The bundled shell helpers require bash. On POSIX `sh`-only hosts, use the Python CLI directly and skip the `.sh` helpers.
 
 ### Phase 2 — Initialize and verify the learning store
 
@@ -255,7 +260,7 @@ This skill merges three design lineages into one portable package:
 | Lineage | Role | What We Kept |
 |---|---|---|
 | **actual-self-improvement** | Execution core | Python CLI (`scripts/learnings.py`), structured logging, JSON evals, search-before-log dedupe |
-| **OpenHuman memory-tree** | Storage core | SQLite chunks, entity index, scores, hotness, lifecycle status, idempotent ingest |
+| **OpenHuman memory-tree** | Storage core | SQLite chunks, FTS search, entity index, scores, hotness, async jobs, deterministic tree buffers, lifecycle status, idempotent ingest |
 | **self-improving-compound** | Memory architecture | HOT/WARM/COLD lifecycle, workspace-scoped `learning/`, lightweight bootstrap markdown |
 | **self-improving-agent-local** | Promotion & hooks | Quantified promotion thresholds, OpenClaw hook guidance, pattern-key recurrence rules |
 
@@ -265,6 +270,7 @@ This skill merges three design lineages into one portable package:
 learning/
 ├── memory_tree/chunks.db  # SQLite source of truth for durable learnings
 ├── index.md               # SQLite-generated snapshot (entries, lifecycle, pattern keys)
+├── promotion-queue.json   # bounded maintain queue for proven promotion candidates
 ├── projects/              # WARM tier (project-specific)
 ├── domains/               # WARM tier (domain-specific)
 └── archive/               # COLD tier (inactive)
@@ -288,7 +294,9 @@ There are **two different roots** in this skill:
    - `learning/archive/`
    - root agent files such as `AGENTS.md`, `MEMORY.md`, `TOOLS.md`, `USER.md`, `SOUL.md`, `HEARTBEAT.md`, `IDENTITY.md`
 
-Never write learnings into the installed skill directory. Always target the **workspace root**.
+When `SELF_IMPROVING_LEARNING_ROOT` or `--learning-root` is set, the `learning/*` files above live in that shared learning root instead. Promotions still target the active **workspace root**, so a shared store can feed multiple projects without writing AGENTS/TOOLS files into the wrong workspace.
+
+Never write learnings into the installed skill directory. Always target the **workspace root** for project memory and the optional **learning root** for shared lesson storage.
 
 
 ## Activation hardening mechanisms
@@ -534,6 +542,8 @@ Example:
 - Good promotion: "Use `pnpm install` in this repo; it is a pnpm workspace."
 
 When a learning is promoted, update the original entry's status to `promoted` or `promoted_to_skill` and record the destination.
+
+`maintain` writes high-recurrence candidates to `learning/promotion-queue.json`. For fully automated deployments, `maintain --apply --auto-promote` promotes those candidates into the active workspace root while keeping the shared learning store separate when `--learning-root` is used.
 
 ### 7) Extract a reusable skill when the pattern is real
 

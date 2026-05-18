@@ -1,7 +1,12 @@
-"""Memory tree ingestion layer — OpenHuman memory architecture port.
+"""Memory tree ingestion layer — selective OpenHuman memory architecture port.
 
 Core types, SQLite store, chunker, and ingestion pipeline ported from
 OpenHuman's `src/openhuman/memory/tree/` module (Rust).
+
+This package is not a one-for-one OpenHuman clone.  It keeps the portable
+storage, scoring, entity index, async job queue, and deterministic tree buffer
+pieces that support agent lesson management, while leaving LLM-based topic
+routing and content-management workflows outside this Python layer.
 
 Public API:
     MemoryStore        — SQLite-backed persistence (all 9 tables)
