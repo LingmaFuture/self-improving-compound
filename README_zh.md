@@ -113,6 +113,15 @@ export SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR="python3 /path/to/recent-context-c
 
 collector 规则：只有成功写出 Markdown/JSON 上下文文件才退出 0；找不到 transcript 时非零退出，让 cron 报 `BLOCKED: collector_unavailable`，不要假成功。
 
+如果需要可观测队列和健康面板，使用内置 pipeline helper：
+
+```bash
+export SELF_IMPROVING_MEMORY_PIPELINE="$SELF_IMPROVING_SKILL_DIR/scripts/memory-pipeline.py"
+python3 "$SELF_IMPROVING_MEMORY_PIPELINE" --base "$OPENCLAW_WORKSPACE/learning/pipeline" dashboard
+```
+
+它会在 `learning/pipeline/` 下写入 `candidates.jsonl`、`promotion-queue.json`、`cursor.json`、`status.json`、`dashboard.md`，并同步生成便捷入口 `learning/dashboard.md`。
+
 安装 cron 需要用户确认。可以让 OpenClaw agent 执行：
 
 > 使用 `scripts/setup-cron.json` 安装 self-improving compound cron jobs。先检查现有任务，有同名任务则 update，不要重复创建。

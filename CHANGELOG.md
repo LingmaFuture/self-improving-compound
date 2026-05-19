@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.2.5 - 2026-05-19
+
+- Added bundled `scripts/memory-pipeline.py` for an observable `Candidate → Learning → Promotion → Done` flow.
+- Added candidate queue, promotion queue, cursor-based incremental transcript processing, machine-readable status, and Markdown dashboard support.
+- Updated Light Check cron template to use candidate-first scanning and commit cursor only after successful processing.
+- Updated SKILL.md and README docs with the memory pipeline setup, dashboard paths, and promotion backlog workflow.
+
 ## 6.2.4 - 2026-05-19
 
 - Documented the deterministic Light Check context collector pattern: isolated cron must not rely on implicit main-chat visibility.

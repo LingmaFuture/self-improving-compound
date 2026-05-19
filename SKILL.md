@@ -3,7 +3,7 @@ name: self-improving-compound
 description: "Agent memory and self-improvement system. Replaces naive file-based agent memory with a structured SQLite learning engine: capture corrections, errors, and reusable lessons during active work, audit recent conversation context via isolated cron jobs with deterministic collectors when available, and promote proven rules into skills and agent instructions. 3+7 co-evolution model — 3 state directories (`memory/`, `learning/`, `skills/`) plus 7 root Markdown control-plane files (`AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `TOOLS.md`, `USER.md`) improve together. Adds daily factual memory and workspace stewardship loops. Python 3.8+ CLI with bash hooks. Use for: logging non-obvious failures, user corrections, tool/API gotchas, or missing capabilities before the final reply. Use for: setting up automated cron-based audit pipelines that catch what real-time capture misses. Do not use for trivial typos or routine noise."
 compatibility: "Portable Agent Skills format. Core workflow is agent-agnostic. Bundled helpers require Python 3.8+; hook helpers require bash. No network access is required."
 metadata:
-  version: "6.2.4"
+  version: "6.2.5"
   original_slug: "self-improving-compound"
   category: "memory-system"
   author: "Hybrid adaptation from actual-self-improvement, self-improving-compound, OpenHuman memory-tree, and Hermes Agent architecture | Contact: rockwaychen@gmail.com | GitHub: LingmaFuture"
@@ -11,9 +11,10 @@ metadata:
 
 # Self-Improving Compound
 
-An agent memory and learning system that replaces naive file-based memory with a structured pipeline: real-time capture, automated cron-based audit, and continuous promotion of lessons into skills and agent instructions.
+An agent memory and learning system that replaces naive file-based memory with a structured pipeline: real-time capture, observable Candidate → Learning → Promotion queues, automated cron-based audit, and continuous promotion of lessons into skills and agent instructions.
 
 The system runs as four layers:
+- **Layer 0 — Observable memory pipeline**: ambiguous or high-value experience moves through `Candidate → Learning → Promotion → Done` using `scripts/memory-pipeline.py`, with `learning/pipeline/candidates.jsonl`, `promotion-queue.json`, `status.json`, and `dashboard.md` making backlog and coverage visible.
 - **Layer 1 — Real-time capture**: AGENTS.md final-before-reply gate logs corrections, errors, and workarounds to SQLite as they happen.
 - **Layer 2 — Cron audit**: Isolated background jobs scan recent conversation context. Prefer a deterministic local transcript/context collector; use `sessions_history` only when it is verified in the runtime. The jobs detect missed lessons and maintain lifecycle (HOT → WARM → COLD).
 - **Layer 3 — Daily factual memory**: a nightly `memory/YYYY-MM-DD.md` digest records decisions, paths, risks, links, and follow-ups; only reusable lessons are extracted into SQLite.
@@ -149,7 +150,27 @@ If your client supports command hooks, wire:
 
 If your runtime has no hook system, skip this phase and rely on the capture gate plus cron. Do not invent config keys; use your runtime's documented hook mechanism.
 
-### Phase 6 — Configure optional context collectors
+### Phase 6 — Configure the observable memory pipeline
+
+The bundled `scripts/memory-pipeline.py` adds an explicit queue and dashboard around cron/context scanning. It is optional for tiny installs but recommended for reliable systems.
+
+```bash
+export SELF_IMPROVING_MEMORY_PIPELINE="$SELF_IMPROVING_SKILL_DIR/scripts/memory-pipeline.py"
+# Optional if the OpenClaw session key is ambiguous:
+# export SELF_IMPROVING_MAIN_SESSION_KEY="agent:main:<channel>:direct:<id>"
+python3 "$SELF_IMPROVING_MEMORY_PIPELINE" --base "$OPENCLAW_WORKSPACE/learning/pipeline" dashboard
+```
+
+State files:
+
+- `learning/pipeline/candidates.jsonl` — suspected lessons awaiting dedupe/logging.
+- `learning/pipeline/promotion-queue.json` — logged lessons awaiting skill/root-file promotion.
+- `learning/pipeline/cursor.json` — last processed transcript line for incremental cron scans.
+- `learning/pipeline/dashboard.md` and `learning/dashboard.md` — human-readable health view.
+
+Cron Light Check should prefer this flow: `collect-incremental → add/mark candidates → log learnings → add/mark promotions → dashboard → commit-cursor`. Commit the cursor only after successful processing.
+
+### Phase 7 — Configure optional context collectors
 
 For reliable cron audits, prefer deterministic collectors over implicit chat context. A collector is a local command that reads the runtime's session/transcript store and writes recent visible user/assistant text to a Markdown or JSON file. It should skip tool outputs, hidden thinking, secrets, and raw long transcripts.
 
@@ -175,7 +196,7 @@ bash "$SELF_IMPROVING_SKILL_DIR/scripts/daily-memory.sh" --root "$OPENCLAW_WORKS
 
 If no collector is configured, the helper prints the target note contract and the agent must gather context with available runtime tools.
 
-### Phase 7 — End-to-end smoke test
+### Phase 8 — End-to-end smoke test
 
 Run this checklist after installation:
 

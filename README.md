@@ -2,7 +2,7 @@
 
 [中文说明 / Chinese README](README_zh.md)
 
-A portable AgentSkill that turns agent memory from scattered markdown notes into a structured self-improvement system: real-time capture, SQLite-backed learning, cron audits with explicit context collection, daily factual memory, and lightweight workspace stewardship.
+A portable AgentSkill that turns agent memory from scattered markdown notes into a structured self-improvement system: real-time capture, observable Candidate → Learning → Promotion queues, SQLite-backed learning, cron audits with explicit context collection, daily factual memory, and lightweight workspace stewardship.
 
 ## What it does
 
@@ -10,6 +10,7 @@ A portable AgentSkill that turns agent memory from scattered markdown notes into
 - **Stores execution learnings in SQLite** under `learning/memory_tree/chunks.db`, with FTS5 search, deterministic entity indexing, dedupe, lifecycle status, exports, and human-readable snapshots.
 - **Keeps facts separate from lessons**: factual continuity goes to `memory/YYYY-MM-DD.md`; reusable prevention rules go to `learning/`.
 - **Audits itself with cron**: light checks, heavy audits, daily factual memory, and post-digest workspace stewardship. Conversation-aware cron jobs should use deterministic context collectors when available instead of relying on implicit chat visibility.
+- **Makes memory observable** with `Candidate → Learning → Promotion → Done`: candidates, promotion backlog, cursor coverage, and dashboard health are visible under `learning/pipeline/`.
 - **Promotes stable rules** into the right layer: `skills/`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md`, or other root agent state files.
 
 ## 3+7 co-evolution model
@@ -37,6 +38,13 @@ The steward loop should make only small, safe consistency updates across these f
 ## Architecture
 
 ```text
+Observable Memory Pipeline
+  -> collect incremental visible context
+  -> add candidates
+  -> log confirmed SQLite learnings
+  -> queue durable promotions
+  -> refresh dashboard
+
 Real-time capture gate
   -> search existing SQLite learnings
   -> log compact correction/error/learning/feature entries
@@ -82,8 +90,9 @@ Full activation checklist:
 4. Add the capture gate to `AGENTS.md` or equivalent agent instructions.
 5. Install/update cron jobs from `scripts/setup-cron.json` and configure delivery.
 6. Optionally wire `hooks/activator.sh` and `hooks/error-detector.sh`.
-7. Optionally configure `SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR` for reliable Light Check context and `SELF_IMPROVING_DAILY_COLLECTOR` for high-quality daily memory.
-8. Run smoke tests: search/log/export/daily-memory helper + `cron list`.
+7. Optionally enable `scripts/memory-pipeline.py` for Candidate → Learning → Promotion visibility.
+8. Optionally configure `SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR` for reliable Light Check context and `SELF_IMPROVING_DAILY_COLLECTOR` for high-quality daily memory.
+9. Run smoke tests: search/log/export/daily-memory helper + `cron list`.
 
 See `SKILL.md` for the detailed installation and activation flow.
 
@@ -148,6 +157,15 @@ export SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR="python3 /path/to/recent-context-c
 ```
 
 Collector rule: exit 0 only after writing a readable Markdown/JSON context file; exit non-zero when the target transcript is unavailable so cron can report `BLOCKED: collector_unavailable` instead of a false success.
+
+For an observable queue and health dashboard, use the bundled pipeline helper:
+
+```bash
+export SELF_IMPROVING_MEMORY_PIPELINE="$SELF_IMPROVING_SKILL_DIR/scripts/memory-pipeline.py"
+python3 "$SELF_IMPROVING_MEMORY_PIPELINE" --base "$OPENCLAW_WORKSPACE/learning/pipeline" dashboard
+```
+
+The helper writes `candidates.jsonl`, `promotion-queue.json`, `cursor.json`, `status.json`, and `dashboard.md` under `learning/pipeline/`; it also writes a convenience `learning/dashboard.md`.
 
 Cron installation is not automatic. Ask your OpenClaw agent:
 
