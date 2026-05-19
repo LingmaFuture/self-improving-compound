@@ -1,9 +1,9 @@
 ---
 name: self-improving-compound
-description: "Agent memory and self-improvement system. Replaces naive file-based agent memory with a structured SQLite learning engine: capture corrections, errors, and reusable lessons during active work, audit session history for missed learnings via isolated cron jobs, and promote proven rules into skills and agent instructions. 3+7 co-evolution model — 3 state directories (`memory/`, `learning/`, `skills/`) plus 7 root Markdown control-plane files (`AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `TOOLS.md`, `USER.md`) improve together. Adds daily factual memory and workspace stewardship loops. Python 3.8+ CLI with bash hooks. Use for: logging non-obvious failures, user corrections, tool/API gotchas, or missing capabilities before the final reply. Use for: setting up automated cron-based audit pipelines that catch what real-time capture misses. Do not use for trivial typos or routine noise."
+description: "Agent memory and self-improvement system. Replaces naive file-based agent memory with a structured SQLite learning engine: capture corrections, errors, and reusable lessons during active work, audit recent conversation context via isolated cron jobs with deterministic collectors when available, and promote proven rules into skills and agent instructions. 3+7 co-evolution model — 3 state directories (`memory/`, `learning/`, `skills/`) plus 7 root Markdown control-plane files (`AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `TOOLS.md`, `USER.md`) improve together. Adds daily factual memory and workspace stewardship loops. Python 3.8+ CLI with bash hooks. Use for: logging non-obvious failures, user corrections, tool/API gotchas, or missing capabilities before the final reply. Use for: setting up automated cron-based audit pipelines that catch what real-time capture misses. Do not use for trivial typos or routine noise."
 compatibility: "Portable Agent Skills format. Core workflow is agent-agnostic. Bundled helpers require Python 3.8+; hook helpers require bash. No network access is required."
 metadata:
-  version: "6.2.3"
+  version: "6.2.4"
   original_slug: "self-improving-compound"
   category: "memory-system"
   author: "Hybrid adaptation from actual-self-improvement, self-improving-compound, OpenHuman memory-tree, and Hermes Agent architecture | Contact: rockwaychen@gmail.com | GitHub: LingmaFuture"
@@ -15,7 +15,7 @@ An agent memory and learning system that replaces naive file-based memory with a
 
 The system runs as four layers:
 - **Layer 1 — Real-time capture**: AGENTS.md final-before-reply gate logs corrections, errors, and workarounds to SQLite as they happen.
-- **Layer 2 — Cron audit**: Isolated background jobs scan session history via `sessions_history`, detect missed lessons, and maintain lifecycle (HOT → WARM → COLD).
+- **Layer 2 — Cron audit**: Isolated background jobs scan recent conversation context. Prefer a deterministic local transcript/context collector; use `sessions_history` only when it is verified in the runtime. The jobs detect missed lessons and maintain lifecycle (HOT → WARM → COLD).
 - **Layer 3 — Daily factual memory**: a nightly `memory/YYYY-MM-DD.md` digest records decisions, paths, risks, links, and follow-ups; only reusable lessons are extracted into SQLite.
 - **Layer 4 — Promotion + stewardship**: proven rules flow from `learning/` SQLite → `skills/` SKILL.md → the 7 root Markdown control-plane files (`AGENTS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `TOOLS.md`, `USER.md`). The full 3+7 system co-evolves.
 
@@ -129,7 +129,7 @@ Important cron requirements:
 - Set `schedule.tz` to the user's actual timezone.
 - Set or infer `delivery.channel` and `delivery.to`; otherwise reports may not reach the user.
 - Use `cron update` for existing jobs; do not create duplicates.
-- Isolated cron sessions do not inherit main chat context. Jobs that need conversation context must use `sessions_list` / `sessions_history` or an explicit collector.
+- Isolated cron sessions do not inherit main chat context. Jobs that need conversation context should prefer an explicit collector that exports recent visible conversation to a file. Use `sessions_list` / `sessions_history` only after verifying those tools can access the target session from isolated cron.
 
 ### Phase 5 — Configure optional hooks
 
@@ -149,9 +149,24 @@ If your client supports command hooks, wire:
 
 If your runtime has no hook system, skip this phase and rely on the capture gate plus cron. Do not invent config keys; use your runtime's documented hook mechanism.
 
-### Phase 6 — Configure optional daily-memory collector
+### Phase 6 — Configure optional context collectors
 
-`Daily Memory Digest` can use a local collector if your runtime has one:
+For reliable cron audits, prefer deterministic collectors over implicit chat context. A collector is a local command that reads the runtime's session/transcript store and writes recent visible user/assistant text to a Markdown or JSON file. It should skip tool outputs, hidden thinking, secrets, and raw long transcripts.
+
+Light Check can use a local recent-conversation collector:
+
+```bash
+export SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR="python3 /path/to/recent-context-collector.py --limit 60"
+```
+
+Collector contract:
+
+- Exit `0` only when context was exported successfully.
+- Print either the output context path or a compact JSON summary containing the path/status.
+- Write a readable Markdown/JSON context file with recent user/assistant visible text.
+- Exit non-zero if the transcript/session cannot be found; the cron job should report `BLOCKED: collector_unavailable` instead of claiming success.
+
+`Daily Memory Digest` can also use a local collector if your runtime has one:
 
 ```bash
 export SELF_IMPROVING_DAILY_COLLECTOR="python3 /path/to/collector.py"
@@ -189,7 +204,7 @@ Then verify:
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `clawhub install` succeeded but nothing changes | Capture gate and cron not configured | Complete phases 3-4. |
-| Cron runs but finds no conversation context | Isolated session has no main history | Use `sessions_list` / `sessions_history` or a collector. |
+| Cron runs but finds no conversation context | Isolated session has no main history or `sessions_history` is restricted | Configure `SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR`; use `sessions_history` only as a verified fallback. |
 | Learnings appear under the skill directory | Wrong `--root` | Set `OPENCLAW_WORKSPACE`; always pass `--root`. |
 | Cron summaries disappear | `delivery` missing channel/recipient | Set `delivery.channel` + `delivery.to`. |
 | Daily memory is generic or empty | No collector/context source | Configure `SELF_IMPROVING_DAILY_COLLECTOR` or improve the cron prompt. |
@@ -310,7 +325,7 @@ When this skill is installed in a persistent agent runtime, self-improvement mus
 ### Architecture decisions (why cron, not heartbeat)
 
 - **Cron is isolated.** `sessionTarget: "isolated"` creates a fresh ephemeral session that does not pollute the main agent's context window or bust prompt-cache warmth.
-- **Cron has tool access to main session history.** Use `sessions_list` to locate the active main session, then `sessions_history` to pull recent assistant turns. This gives the cron job visibility into real conversation without running inside the main session.
+- **Cron context must be explicit.** An isolated cron job does not automatically see the main chat. Prefer a deterministic collector that reads the runtime's local session/transcript store and exports recent user/assistant visible text to a file. `sessions_list` / `sessions_history` can be used only when you have verified they work from isolated cron; otherwise they create false confidence.
 - **Heartbeat runs in the main session by default.** Its role should be limited to lightweight check-ins and urgent reminders. Do not embed audit execution commands in `HEARTBEAT.md`; keep that file minimal so heartbeat returns `HEARTBEAT_OK` quickly unless an urgent decision is needed.
 
 ### Recommended cron schedule
@@ -326,7 +341,7 @@ Daily Workspace Steward                  20 0 * * *        (post-digest maintena
 
 #### Light Check (every 2h, 08:00-22:00)
 
-A quick in-between scan that locates the main session via `sessions_list`, pulls recent assistant turns via `sessions_history`, and checks whether any user correction, non-obvious error, workaround, or tool/API quirk has been missed by the SQLite learning store. Tools: `sessions_list`, `sessions_history`, `exec` (for `learnings.py search`), `read`. Timeout: 120-180s.
+A quick in-between scan that reads recent conversation context and checks whether any user correction, non-obvious error, workaround, or tool/API quirk has been missed by the SQLite learning store. Preferred path: run `SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR`, read its exported Markdown/JSON, then dedupe with `learnings.py search`. Fallback path: use `sessions_list` / `sessions_history` only if verified from isolated cron. Tools: `exec`, `read`; optionally `sessions_list`, `sessions_history` for the fallback. Timeout: 120-180s.
 
 #### Heavy Audit (09:00, 22:00)
 

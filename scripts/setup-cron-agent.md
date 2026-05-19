@@ -33,6 +33,7 @@ The last two jobs are intentionally separated: the digest writes the daily factu
    - `SELF_IMPROVING_LEARNING_ROOT` may point to a shared learning store used by multiple workspaces.
    - `SELF_IMPROVING_SKILL_DIR` may point to the installed skill directory.
    - `SELF_IMPROVING_LEARNINGS_CLI` may point to an explicit `learnings.py`.
+   - `SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR` may point to an optional recent-conversation collector command for Light Check.
    - `SELF_IMPROVING_DAILY_COLLECTOR` may point to an optional daily-context collector command.
 
 3. **Configure delivery.**
@@ -55,4 +56,5 @@ Defaults use `Asia/Shanghai`. If the user operates in another timezone, adjust `
 
 - These jobs may write local markdown and SQLite state. Ask before installing.
 - The Workspace Steward must only make small, safe, local markdown updates. It must not rewrite persona files, weaken safety/privacy rules, delete files, or change cron jobs.
+- Light Check should prefer `SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR` when available; if the collector fails, report `BLOCKED: collector_unavailable` instead of pretending the context was scanned.
 - Daily Memory Digest should not copy raw transcripts into `learning/`; it should extract compact reusable lessons only.

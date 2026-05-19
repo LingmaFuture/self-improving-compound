@@ -2,14 +2,14 @@
 
 [中文说明 / Chinese README](README_zh.md)
 
-A portable AgentSkill that turns agent memory from scattered markdown notes into a structured self-improvement system: real-time capture, SQLite-backed learning, cron audits, daily factual memory, and lightweight workspace stewardship.
+A portable AgentSkill that turns agent memory from scattered markdown notes into a structured self-improvement system: real-time capture, SQLite-backed learning, cron audits with explicit context collection, daily factual memory, and lightweight workspace stewardship.
 
 ## What it does
 
 - **Captures durable lessons** before the final reply after non-trivial work: user corrections, tool/API gotchas, non-obvious failures, workarounds, and missing capabilities.
 - **Stores execution learnings in SQLite** under `learning/memory_tree/chunks.db`, with FTS5 search, deterministic entity indexing, dedupe, lifecycle status, exports, and human-readable snapshots.
 - **Keeps facts separate from lessons**: factual continuity goes to `memory/YYYY-MM-DD.md`; reusable prevention rules go to `learning/`.
-- **Audits itself with cron**: light checks, heavy audits, daily factual memory, and post-digest workspace stewardship.
+- **Audits itself with cron**: light checks, heavy audits, daily factual memory, and post-digest workspace stewardship. Conversation-aware cron jobs should use deterministic context collectors when available instead of relying on implicit chat visibility.
 - **Promotes stable rules** into the right layer: `skills/`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md`, or other root agent state files.
 
 ## 3+7 co-evolution model
@@ -82,7 +82,7 @@ Full activation checklist:
 4. Add the capture gate to `AGENTS.md` or equivalent agent instructions.
 5. Install/update cron jobs from `scripts/setup-cron.json` and configure delivery.
 6. Optionally wire `hooks/activator.sh` and `hooks/error-detector.sh`.
-7. Optionally configure `SELF_IMPROVING_DAILY_COLLECTOR` for high-quality daily memory.
+7. Optionally configure `SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR` for reliable Light Check context and `SELF_IMPROVING_DAILY_COLLECTOR` for high-quality daily memory.
 8. Run smoke tests: search/log/export/daily-memory helper + `cron list`.
 
 See `SKILL.md` for the detailed installation and activation flow.
@@ -110,9 +110,9 @@ python3 scripts/learnings.py --root /path/to/workspace log-correction \
 
 # Log a reusable learning
 python3 scripts/learnings.py --root /path/to/workspace log-learning \
-  --summary "Cron jobs that need conversation context must pull session history explicitly" \
-  --details "Isolated cron sessions do not automatically inherit the main chat context." \
-  --pattern cron:session-context
+  --summary "Cron jobs that need conversation context should collect it explicitly" \
+  --details "Isolated cron sessions do not automatically inherit main chat context; prefer a deterministic transcript/context collector, with sessions_history only as a verified fallback." \
+  --pattern cron:explicit-context
 
 # Review and maintain lifecycle
 python3 scripts/learnings.py --root /path/to/workspace status
@@ -140,6 +140,14 @@ Recommended jobs:
 | Learning Audit Heavy | 09:00 and 22:00 | Audit failures, log missed lessons, maintain lifecycle. |
 | Daily Memory Digest | 23:50 | Write `memory/YYYY-MM-DD.md`, then extract reusable lessons. |
 | Daily Workspace Steward | 00:20 | Export learning memory and lightly inspect `learning/`, `skills/`, and the 7 root Markdown control-plane files. |
+
+For reliable Light Check context, set an optional collector when your runtime can export recent visible conversation from its local session/transcript store:
+
+```bash
+export SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR="python3 /path/to/recent-context-collector.py --limit 60"
+```
+
+Collector rule: exit 0 only after writing a readable Markdown/JSON context file; exit non-zero when the target transcript is unavailable so cron can report `BLOCKED: collector_unavailable` instead of a false success.
 
 Cron installation is not automatic. Ask your OpenClaw agent:
 

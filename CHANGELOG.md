@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.2.4 - 2026-05-19
+
+- Documented the deterministic Light Check context collector pattern: isolated cron must not rely on implicit main-chat visibility.
+- Added `SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR` as the portable environment contract for exporting recent visible user/assistant conversation to Markdown/JSON.
+- Updated `scripts/setup-cron.json` so Light Check runs the collector first, reports `BLOCKED: collector_unavailable` on collector failure, and uses `sessions_history` only as a verified fallback.
+- Updated English/Chinese README and cron setup guide with the collector contract and false-success guardrail.
+
 ## 6.2.3 - 2026-05-18
 
 - Release packaging hygiene update: preserve local research/reference artifacts in the canonical working directory while excluding them from Git and ClawHub packages via ignore files.

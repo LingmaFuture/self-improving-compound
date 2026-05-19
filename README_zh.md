@@ -2,14 +2,14 @@
 
 [English README](README.md)
 
-一个可移植的 AgentSkill，用来把 Agent 记忆从零散 Markdown 升级成结构化自进化系统：实时捕获、SQLite 学习库、cron 审计、每日事实记忆、workspace 轻量维护。
+一个可移植的 AgentSkill，用来把 Agent 记忆从零散 Markdown 升级成结构化自进化系统：实时捕获、SQLite 学习库、带显式上下文采集的 cron 审计、每日事实记忆、workspace 轻量维护。
 
 ## 核心能力
 
 - **最终回复前捕获可复用经验**：用户纠正、工具/API 坑、非显然失败、workaround、缺失能力。
 - **SQLite 作为执行学习源头**：默认写入 `learning/memory_tree/chunks.db`，支持 FTS5 搜索、确定性实体索引、去重、异步 job、生命周期、导出。
 - **事实与教训分层**：事实连续性写入 `memory/YYYY-MM-DD.md`；可复用预防规则写入 `learning/`。
-- **cron 自动审计**：轻量检查、重型审计、每日事实记忆、post-digest workspace steward。
+- **cron 自动审计**：轻量检查、重型审计、每日事实记忆、post-digest workspace steward。需要对话上下文的 cron 应优先使用确定性 collector，而不是依赖隐式会话可见性。
 - **规则逐层沉淀**：稳定规则进入 `skills/`、`AGENTS.md`、`TOOLS.md`、`MEMORY.md` 等长期状态文件。
 
 
@@ -60,7 +60,7 @@ python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" status
 4. 把 capture gate 写进 `AGENTS.md` 或等价 agent 指令。
 5. 按 `scripts/setup-cron.json` 安装/更新 cron，并配置投递目标。
 6. 可选：配置 `hooks/activator.sh` 和 `hooks/error-detector.sh`。
-7. 可选：配置 `SELF_IMPROVING_DAILY_COLLECTOR` 提升 Daily Memory Digest 质量。
+7. 可选：配置 `SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR` 保障 Light Check 上下文，配置 `SELF_IMPROVING_DAILY_COLLECTOR` 提升 Daily Memory Digest 质量。
 8. 做 search / log / export / daily-memory / cron list smoke test。
 
 要求：Python 3.8+、bash。本地 CLI 不需要网络访问。随包 `.sh` helper 明确依赖 bash；纯 POSIX `sh` 环境不保证可用，可直接调用 Python CLI。
@@ -71,9 +71,9 @@ python3 "$SELF_IMPROVING_LEARNINGS_CLI" --root "$OPENCLAW_WORKSPACE" status
 python3 scripts/learnings.py --root /path/to/workspace init
 python3 scripts/learnings.py --root /path/to/workspace search "cron context" --limit 5
 python3 scripts/learnings.py --root /path/to/workspace log-learning \
-  --summary "隔离 cron 需要显式拉取 session history" \
-  --details "isolated session 不会自动继承主对话上下文。" \
-  --pattern cron:session-context
+  --summary "需要对话上下文的 cron 应显式采集上下文" \
+  --details "isolated cron 不会自动继承主对话；优先使用确定性 transcript/context collector，sessions_history 只作为验证过的 fallback。" \
+  --pattern cron:explicit-context
 python3 scripts/learnings.py --root /path/to/workspace process-jobs
 python3 scripts/learnings.py --root /path/to/workspace maintain --apply
 python3 scripts/learnings.py --root /path/to/workspace maintain --apply --auto-promote
@@ -104,6 +104,14 @@ worker 会消费 `mem_tree_jobs`，生成 tree buffer/summary，并以 `maintain
 | Learning Audit Heavy | 09:00 / 22:00 | 审计系统/cron 失败，维护 HOT/WARM/COLD 生命周期。 |
 | Daily Memory Digest | 23:50 | 写 `memory/YYYY-MM-DD.md`，再抽取可复用教训。 |
 | Daily Workspace Steward | 00:20 | 导出 learning，轻量检查 `learning/`、`skills/`、7 个根目录 Markdown 控制面文件。 |
+
+如果运行时能从本地 session/transcript store 导出近期可见对话，建议配置 Light Check collector：
+
+```bash
+export SELF_IMPROVING_LIGHT_CONTEXT_COLLECTOR="python3 /path/to/recent-context-collector.py --limit 60"
+```
+
+collector 规则：只有成功写出 Markdown/JSON 上下文文件才退出 0；找不到 transcript 时非零退出，让 cron 报 `BLOCKED: collector_unavailable`，不要假成功。
 
 安装 cron 需要用户确认。可以让 OpenClaw agent 执行：
 
